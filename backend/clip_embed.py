@@ -1,0 +1,143 @@
+import os
+import sqlite3
+import struct
+import numpy as np
+from pathlib import Path
+from PIL import Image
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import torch
+import clip
+
+DB_DIR = os.path.join(os.path.dirname(__file__), "database")
+DB_PATH = os.path.join(DB_DIR, "embeddings.db")
+IMAGES_FOLDER = os.path.join(os.path.dirname(__file__), "..", "assets", "images1")
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+
+def _serialize(vec: np.ndarray) -> bytes:
+    return struct.pack(f"{len(vec)}f", *vec.tolist())
+
+
+def _deserialize(blob: bytes) -> np.ndarray:
+    n = len(blob) // 4
+    return np.array(struct.unpack(f"{n}f", blob), dtype=np.float32)
+
+
+def _init_db():
+    os.makedirs(DB_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL UNIQUE,
+            file_name TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def save_all_embeddings():
+    conn = _init_db()
+    extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
+    images = [
+        p for p in Path(IMAGES_FOLDER).iterdir()
+        if p.suffix.lower() in extensions and p.is_file()
+    ]
+
+    print(f"Found {len(images)} images in {IMAGES_FOLDER}")
+    saved = 0
+
+    for img_path in images:
+        abs_path = str(img_path.resolve())
+        existing = conn.execute(
+            "SELECT id FROM embeddings WHERE file_path = ?", (abs_path,)
+        ).fetchone()
+        if existing:
+            continue
+
+        try:
+            img = preprocess(Image.open(img_path).convert("RGB")).unsqueeze(0).to(device)
+            with torch.no_grad():
+                embedding = model.encode_image(img)
+            vec = embedding.cpu().numpy().flatten()
+            vec = vec / np.linalg.norm(vec)
+
+            conn.execute(
+                "INSERT INTO embeddings (file_path, file_name, embedding) VALUES (?, ?, ?)",
+                (abs_path, img_path.name, _serialize(vec)),
+            )
+            saved += 1
+            print(f"  [{saved}] {img_path.name}")
+        except Exception as e:
+            print(f"  SKIP {img_path.name}: {e}")
+
+    conn.commit()
+    conn.close()
+    print(f"Done. Saved {saved} new embeddings to {DB_PATH}")
+
+
+def search(query: str, top_k: int = 5):
+    conn = _init_db()
+    rows = conn.execute("SELECT file_path, file_name, embedding FROM embeddings").fetchall()
+    if not rows:
+        print("No embeddings in database. Run save_all_embeddings() first.")
+        conn.close()
+        return []
+
+    text_tokens = clip.tokenize([query]).to(device)
+    with torch.no_grad():
+        text_vec = model.encode_text(text_tokens).cpu().numpy().flatten()
+    text_vec = text_vec / np.linalg.norm(text_vec)
+
+    results = []
+    for file_path, file_name, blob in rows:
+        img_vec = _deserialize(blob)
+        score = float(np.dot(text_vec, img_vec))
+        results.append((file_path, file_name, score))
+
+    results.sort(key=lambda x: x[2], reverse=True)
+    top = results[:top_k]
+
+    print(f"Top {len(top)} results for '{query}':")
+    for path, name, score in top:
+        print(f"  {score:.4f}  {name}")
+
+    conn.close()
+    return top
+
+
+if __name__ == "__main__":
+    import sys
+    import json
+    import tempfile
+    if len(sys.argv) > 1 and sys.argv[1] == "search":
+        query = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "food"
+        results = search(query)
+        output = []
+        for file_path, file_name, score in results:
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext in {".heic", ".heif"}:
+                tmp_path = os.path.join(
+                    tempfile.gettempdir(),
+                    f"quemory_{os.path.splitext(file_name)[0]}.jpg",
+                )
+                if not os.path.exists(tmp_path):
+                    img = Image.open(file_path).convert("RGB")
+                    img.save(tmp_path, "JPEG", quality=85)
+                display_path = tmp_path
+            else:
+                display_path = file_path
+            output.append({"path": display_path, "name": file_name, "score": score})
+        print("RESULTS_JSON:" + json.dumps(output))
+    else:
+        save_all_embeddings()
