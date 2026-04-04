@@ -69,197 +69,141 @@ class _TripsPageState extends State<TripsPage> {
     showGeneralDialog(
       context: context,
       barrierLabel: 'Add Trip',
-      barrierDismissible: true,
+      barrierDismissible: false,
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 350),
       pageBuilder: (context, animation, secondaryAnimation) {
         bool isCreating = false;
+        String? errorText;
         return Center(
           child: Material(
             color: Colors.transparent,
             child: StatefulBuilder(
               builder: (context, setDialogState) {
-                return Container(
-                  width: 400,
-                  padding: const EdgeInsets.all(32),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 30,
-                        offset: Offset(0, 12),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'New Trip',
-                        style: GoogleFonts.sora(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                          color: const Color(0xFF1A5276),
+                return PopScope(
+                  canPop: !isCreating,
+                  child: Container(
+                    width: 400,
+                    padding: const EdgeInsets.all(32),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 30,
+                          offset: Offset(0, 12),
                         ),
-                      ),
-                      const SizedBox(height: 24),
-                      TextField(
-                        controller: nameController,
-                        decoration: InputDecoration(
-                          hintText: 'Trip name (e.g. Korea 2026)',
-                          hintStyle: GoogleFonts.sora(
-                            color: Colors.grey.shade400,
-                          ),
-                          filled: true,
-                          fillColor: const Color(0xFFF5F5F5),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide.none,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 16,
-                          ),
-                        ),
-                        style: GoogleFonts.sora(fontSize: 16),
-                      ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(Icons.photo_library_outlined),
-                          label: Text(
-                            'Select Images',
-                            style: GoogleFonts.sora(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            side: const BorderSide(color: Color(0xFF2E86C1)),
-                            foregroundColor: const Color(0xFF2E86C1),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Extra Information',
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'New Trip',
                           style: GoogleFonts.sora(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black87,
+                            fontSize: 28,
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF1A5276),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        maxLines: 5,
-                        decoration: InputDecoration(
-                          hintText:
-                              'Add any extra information about this trip...',
-                          hintStyle: GoogleFonts.sora(
-                            color: Colors.grey.shade400,
+                        const SizedBox(height: 24),
+                        TextField(
+                          controller: nameController,
+                          decoration: InputDecoration(
+                            hintText: 'Trip name (e.g. Korea 2026)',
+                            hintStyle: GoogleFonts.sora(
+                              color: Colors.grey.shade400,
+                            ),
+                            filled: true,
+                            fillColor: const Color(0xFFF5F5F5),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
                           ),
-                          filled: true,
-                          fillColor: const Color(0xFFF5F5F5),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide.none,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 16,
-                          ),
+                          style: GoogleFonts.sora(fontSize: 16),
                         ),
-                        style: GoogleFonts.sora(fontSize: 15),
-                      ),
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 14,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () {},
+                            icon: const Icon(Icons.photo_library_outlined),
+                            label: Text(
+                              'Select Images',
+                              style: GoogleFonts.sora(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
                               ),
-                              child: Text(
-                                'Cancel',
-                                style: GoogleFonts.sora(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.grey,
-                                ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              side: const BorderSide(color: Color(0xFF2E86C1)),
+                              foregroundColor: const Color(0xFF2E86C1),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Extra Information',
+                            style: GoogleFonts.sora(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          maxLines: 5,
+                          decoration: InputDecoration(
+                            hintText:
+                                'Add any extra information about this trip...',
+                            hintStyle: GoogleFonts.sora(
+                              color: Colors.grey.shade400,
+                            ),
+                            filled: true,
+                            fillColor: const Color(0xFFF5F5F5),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
+                          ),
+                          style: GoogleFonts.sora(fontSize: 15),
+                        ),
+                        if (errorText != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Text(
+                              errorText!,
+                              style: GoogleFonts.sora(
+                                fontSize: 13,
+                                color: Colors.red.shade600,
                               ),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Container(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFF1A5276),
-                                    Color(0xFF2D8B4E),
-                                  ],
-                                ),
-                              ),
+                        const SizedBox(height: 24),
+                        Row(
+                          children: [
+                            Expanded(
                               child: TextButton(
                                 onPressed: isCreating
                                     ? null
-                                    : () async {
-                                        final name = nameController.text.trim();
-                                        if (name.isEmpty) return;
-                                        setDialogState(() => isCreating = true);
-                                        try {
-                                          final response = await http.post(
-                                            Uri.parse(
-                                              'http://localhost:8000/trips',
-                                            ),
-                                            headers: {
-                                              'Content-Type':
-                                                  'application/json',
-                                            },
-                                            body: jsonEncode({'name': name}),
-                                          );
-                                          if (response.statusCode == 200) {
-                                            final data = jsonDecode(
-                                              response.body,
-                                            );
-                                            setState(() {
-                                              _trips.add({
-                                                'id': data['trip_id'],
-                                                'name': data['name'],
-                                              });
-                                            });
-                                          }
-                                        } catch (e) {
-                                          debugPrint('Create trip error: $e');
-                                          setState(() {
-                                            _trips.add({
-                                              'id': -1,
-                                              'name': name,
-                                            });
-                                          });
-                                        }
-                                        if (context.mounted) {
-                                          Navigator.pop(context);
-                                        }
-                                      },
+                                    : () => Navigator.pop(context),
                                 style: TextButton.styleFrom(
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 14,
@@ -268,29 +212,114 @@ class _TripsPageState extends State<TripsPage> {
                                     borderRadius: BorderRadius.circular(14),
                                   ),
                                 ),
-                                child: isCreating
-                                    ? const SizedBox(
-                                        width: 20,
-                                        height: 20,
-                                        child: CircularProgressIndicator(
-                                          color: Colors.white,
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : Text(
-                                        'Create',
-                                        style: GoogleFonts.sora(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white,
-                                        ),
-                                      ),
+                                child: Text(
+                                  'Cancel',
+                                  style: GoogleFonts.sora(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: isCreating
+                                        ? Colors.grey.shade300
+                                        : Colors.grey,
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(14),
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF1A5276),
+                                      Color(0xFF2D8B4E),
+                                    ],
+                                  ),
+                                ),
+                                child: TextButton(
+                                  onPressed: isCreating
+                                      ? null
+                                      : () async {
+                                          final name = nameController.text
+                                              .trim();
+                                          if (name.isEmpty) return;
+                                          setDialogState(
+                                            () => isCreating = true,
+                                          );
+                                          try {
+                                            final response = await http.post(
+                                              Uri.parse(
+                                                'http://localhost:8000/trips',
+                                              ),
+                                              headers: {
+                                                'Content-Type':
+                                                    'application/json',
+                                              },
+                                              body: jsonEncode({'name': name}),
+                                            );
+                                            if (response.statusCode == 200) {
+                                              final data = jsonDecode(
+                                                response.body,
+                                              );
+                                              setState(() {
+                                                _trips.add({
+                                                  'id': data['trip_id'],
+                                                  'name': data['name'],
+                                                });
+                                              });
+                                            } else {
+                                              setDialogState(() {
+                                                isCreating = false;
+                                                errorText =
+                                                    'Server error (${response.statusCode}). Try again.';
+                                              });
+                                              return;
+                                            }
+                                          } catch (e) {
+                                            debugPrint('Create trip error: $e');
+                                            setDialogState(() {
+                                              isCreating = false;
+                                              errorText =
+                                                  'Failed to create trip. Is the server running?';
+                                            });
+                                            return;
+                                          }
+                                          if (context.mounted) {
+                                            Navigator.pop(context);
+                                          }
+                                        },
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 14,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
+                                  child: isCreating
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            color: Colors.white,
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : Text(
+                                          'Create',
+                                          style: GoogleFonts.sora(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 );
               },

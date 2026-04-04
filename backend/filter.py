@@ -26,6 +26,16 @@ from clip_embed import (
     _serialize, _deserialize, IMAGES_FOLDER,
 )
 
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'calc'))
+    import filter_core as _cpp
+    _USE_CPP = True
+    print("[filter] C++ acceleration enabled")
+except ImportError:
+    _USE_CPP = False
+    print("[filter] C++ not available, using Python fallback")
+
 VARIANCE_THRESHOLD = 100.0
 ENTROPY_THRESHOLD = 3.0
 TEMPORAL_GAP_SECONDS = 1800
@@ -77,6 +87,16 @@ def phase0_reject(image_path: str) -> tuple[bool, str]:
         img = Image.open(image_path).convert("L")
         img_small = img.resize((256, 256), Image.Resampling.LANCZOS)
         pixels = np.array(img_small, dtype=np.float64)
+
+        if _USE_CPP:
+            rejected, variance, entropy = _cpp.phase0_check(
+                np.ascontiguousarray(pixels), VARIANCE_THRESHOLD, ENTROPY_THRESHOLD
+            )
+            if rejected:
+                if variance < VARIANCE_THRESHOLD:
+                    return True, f"blank (variance={variance:.1f})"
+                return True, f"uniform (entropy={entropy:.2f})"
+            return False, ""
 
         variance = float(np.var(pixels))
         if variance < VARIANCE_THRESHOLD:
@@ -150,8 +170,11 @@ def _compute_noise(img_gray: np.ndarray) -> float:
 def extract_pixel_features(image_path: str) -> dict:
     img = Image.open(image_path)
     img_small = img.resize((512, 512), Image.Resampling.LANCZOS)
-    rgb = np.array(img_small.convert("RGB"), dtype=np.uint8)
-    gray = np.array(img_small.convert("L"), dtype=np.uint8)
+    rgb = np.ascontiguousarray(np.array(img_small.convert("RGB"), dtype=np.uint8))
+    gray = np.ascontiguousarray(np.array(img_small.convert("L"), dtype=np.uint8))
+
+    if _USE_CPP:
+        return dict(_cpp.compute_all_pixel_features(gray, rgb))
 
     return {
         "sharpness": _compute_sharpness(gray),
@@ -268,6 +291,19 @@ def cluster_visual(features_list: list[dict]) -> list[int]:
     n = len(features_list)
     if n == 0:
         return []
+
+    if _USE_CPP:
+        embeddings = np.ascontiguousarray(
+            np.stack([f["embedding"] for f in features_list]).astype(np.float32)
+        )
+        phashes = np.array(
+            [int(f["phash"], 16) for f in features_list], dtype=np.uint64
+        )
+        labels = _cpp.cluster_visual(
+            embeddings, phashes,
+            VISUAL_SIM_THRESHOLD, PHASH_HAMMING_THRESHOLD, VISUAL_KNN
+        )
+        return labels.tolist()
 
     embeddings = np.stack([f["embedding"] for f in features_list])
     phashes = [f["phash"] for f in features_list]
