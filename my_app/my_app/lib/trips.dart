@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 
 class TripsPage extends StatefulWidget {
@@ -16,6 +17,53 @@ class TripsPage extends StatefulWidget {
 
 class _TripsPageState extends State<TripsPage> {
   final List<Map<String, dynamic>> _trips = [];
+  bool _isDetecting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTrips();
+  }
+
+  Future<void> _loadTrips() async {
+    try {
+      final response = await http.get(Uri.parse('http://localhost:8000/trips'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        setState(() {
+          _trips.clear();
+          for (final t in data) {
+            _trips.add({
+              'id': t['id'],
+              'name': t['name'],
+              'notes': t['notes'],
+              'start_date': t['start_date'],
+              'end_date': t['end_date'],
+              'cover_photo_path': t['cover_photo_path'],
+              'total_photos': t['total_photos'],
+            });
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Load trips error: $e');
+    }
+  }
+
+  Future<void> _detectTrips() async {
+    setState(() => _isDetecting = true);
+    try {
+      final response = await http.post(
+        Uri.parse('http://localhost:8000/detect-trips'),
+      );
+      if (response.statusCode == 200) {
+        await _loadTrips();
+      }
+    } catch (e) {
+      debugPrint('Detect trips error: $e');
+    }
+    setState(() => _isDetecting = false);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,40 +79,93 @@ class _TripsPageState extends State<TripsPage> {
         ),
       ),
       body: _EmptyState(trips: _trips, onTripsChanged: () => setState(() {})),
-      floatingActionButton: Container(
-        width: 60,
-        height: 60,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF2D8B4E), Color(0xFF6BBF7A)],
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF2D8B4E).withValues(alpha: 0.35),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF1A5276), Color(0xFF2E86C1)],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF1A5276).withValues(alpha: 0.35),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(18),
-            onTap: () {
-              _showAddTripDialog(context);
-            },
-            child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: _isDetecting ? null : _detectTrips,
+                child: _isDetecting
+                    ? const Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.5,
+                          ),
+                        ),
+                      )
+                    : const Icon(
+                        Icons.travel_explore_rounded,
+                        color: Colors.white,
+                        size: 28,
+                      ),
+              ),
+            ),
           ),
-        ),
+          const SizedBox(height: 12),
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF2D8B4E), Color(0xFF6BBF7A)],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF2D8B4E).withValues(alpha: 0.35),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: () {
+                  _showAddTripDialog(context);
+                },
+                child: const Icon(
+                  Icons.add_rounded,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   void _showAddTripDialog(BuildContext context) {
     final nameController = TextEditingController();
+    final notesController = TextEditingController();
 
     showGeneralDialog(
       context: context,
@@ -75,6 +176,7 @@ class _TripsPageState extends State<TripsPage> {
       pageBuilder: (context, animation, secondaryAnimation) {
         bool isCreating = false;
         String? errorText;
+        String? selectedFolder;
         return Center(
           child: Material(
             color: Colors.transparent,
@@ -132,10 +234,20 @@ class _TripsPageState extends State<TripsPage> {
                         SizedBox(
                           width: double.infinity,
                           child: OutlinedButton.icon(
-                            onPressed: () {},
+                            onPressed: () async {
+                              final path = await FilePicker.platform
+                                  .getDirectoryPath(
+                                    dialogTitle: 'Select image folder',
+                                  );
+                              if (path != null) {
+                                setDialogState(() => selectedFolder = path);
+                              }
+                            },
                             icon: const Icon(Icons.photo_library_outlined),
                             label: Text(
-                              'Select Images',
+                              selectedFolder != null
+                                  ? selectedFolder!.split(RegExp(r'[\\/]')).last
+                                  : 'Select Images',
                               style: GoogleFonts.sora(
                                 fontSize: 15,
                                 fontWeight: FontWeight.w600,
@@ -146,8 +258,14 @@ class _TripsPageState extends State<TripsPage> {
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(14),
                               ),
-                              side: const BorderSide(color: Color(0xFF2E86C1)),
-                              foregroundColor: const Color(0xFF2E86C1),
+                              side: BorderSide(
+                                color: selectedFolder != null
+                                    ? const Color(0xFF2D8B4E)
+                                    : const Color(0xFF2E86C1),
+                              ),
+                              foregroundColor: selectedFolder != null
+                                  ? const Color(0xFF2D8B4E)
+                                  : const Color(0xFF2E86C1),
                             ),
                           ),
                         ),
@@ -166,6 +284,7 @@ class _TripsPageState extends State<TripsPage> {
                         const SizedBox(height: 8),
                         TextField(
                           maxLines: 5,
+                          controller: notesController,
                           decoration: InputDecoration(
                             hintText:
                                 'Add any extra information about this trip...',
@@ -242,6 +361,8 @@ class _TripsPageState extends State<TripsPage> {
                                       : () async {
                                           final name = nameController.text
                                               .trim();
+                                          final notes = notesController.text
+                                              .trim();
                                           if (name.isEmpty) return;
                                           setDialogState(
                                             () => isCreating = true,
@@ -255,7 +376,12 @@ class _TripsPageState extends State<TripsPage> {
                                                 'Content-Type':
                                                     'application/json',
                                               },
-                                              body: jsonEncode({'name': name}),
+                                              body: jsonEncode({
+                                                'name': name,
+                                                'notes': notes,
+                                                if (selectedFolder != null)
+                                                  'folder': selectedFolder,
+                                              }),
                                             );
                                             if (response.statusCode == 200) {
                                               final data = jsonDecode(
@@ -265,6 +391,7 @@ class _TripsPageState extends State<TripsPage> {
                                                 _trips.add({
                                                   'id': data['trip_id'],
                                                   'name': data['name'],
+                                                  'notes': data['notes'],
                                                 });
                                               });
                                             } else {
@@ -674,13 +801,36 @@ class _BigSquareButtonState extends State<_BigSquareButton> {
                       ),
                     ),
                     const SizedBox(height: 20),
-                    Text(
-                      '>>> Status Update is Available!',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.sora(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w500,
-                        color: const Color(0xFF6BBF7A),
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          PageRouteBuilder(
+                            opaque: true,
+                            pageBuilder: (_, __, ___) => _TripWrappedStory(
+                              tripName: widget.label,
+                              locations: locations,
+                              keyPhotos: curatedPhotos,
+                            ),
+                            transitionsBuilder: (_, anim, __, child) {
+                              return FadeTransition(
+                                opacity: anim,
+                                child: child,
+                              );
+                            },
+                            transitionDuration: const Duration(
+                              milliseconds: 400,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Text(
+                        '>>> Status Update is Available!',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.sora(
+                          fontSize: 30,
+                          fontWeight: FontWeight.w500,
+                          color: const Color(0xFF6BBF7A),
+                        ),
                       ),
                     ),
                     Padding(
@@ -994,4 +1144,404 @@ class _RoutePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// ═══════════════════════════════════════════════
+// Trip Wrapped — full-screen story view
+// ═══════════════════════════════════════════════
+
+class _TripWrappedStory extends StatefulWidget {
+  final String tripName;
+  final List<Map<String, dynamic>> locations;
+  final List<Map<String, dynamic>> keyPhotos;
+
+  const _TripWrappedStory({
+    required this.tripName,
+    required this.locations,
+    required this.keyPhotos,
+  });
+
+  @override
+  State<_TripWrappedStory> createState() => _TripWrappedStoryState();
+}
+
+class _TripWrappedStoryState extends State<_TripWrappedStory>
+    with TickerProviderStateMixin {
+  int _page = 0;
+  static const _totalPages = 2;
+  int _photoIndex = 0;
+
+  late final AnimationController _fadeController;
+  late Animation<double> _fadeAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _fadeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _fadeAnim = CurvedAnimation(
+      parent: _fadeController,
+      curve: Curves.easeInOut,
+    );
+    _fadeController.forward();
+  }
+
+  @override
+  void dispose() {
+    _fadeController.dispose();
+    super.dispose();
+  }
+
+  void _advance() {
+    if (_page + 1 >= _totalPages) {
+      Navigator.of(context).pop();
+      return;
+    }
+    _fadeController.reverse().then((_) {
+      setState(() => _page++);
+      _fadeController.forward();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _advance,
+        child: Column(
+          children: [
+            // Progress bars
+            SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Row(
+                  children: List.generate(_totalPages, (i) {
+                    return Expanded(
+                      child: Container(
+                        margin: EdgeInsets.only(
+                          right: i < _totalPages - 1 ? 6 : 0,
+                        ),
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: i <= _page
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.3),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+            // Page content
+            Expanded(
+              child: FadeTransition(
+                opacity: _fadeAnim,
+                child: _page == 0 ? _buildIntroPage() : _buildRoutePage(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIntroPage() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              "Here's your\ntrip wrapped.",
+              textAlign: TextAlign.center,
+              style: GoogleFonts.sora(
+                fontSize: 36,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+                height: 1.3,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              widget.tripName,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.sora(
+                fontSize: 18,
+                fontWeight: FontWeight.w500,
+                color: const Color(0xFF6BBF7A),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRoutePage() {
+    final photos = widget.keyPhotos;
+    final locs = widget.locations;
+
+    // Build route points
+    final routePoints = <LatLng>[];
+    for (final loc in locs) {
+      routePoints.add(
+        LatLng(
+          (loc['latitude'] as num).toDouble(),
+          (loc['longitude'] as num).toDouble(),
+        ),
+      );
+    }
+
+    // Center map
+    LatLng center = LatLng(37.5665, 126.978);
+    if (routePoints.isNotEmpty) {
+      double latSum = 0, lngSum = 0;
+      for (final p in routePoints) {
+        latSum += p.latitude;
+        lngSum += p.longitude;
+      }
+      center = LatLng(latSum / routePoints.length, lngSum / routePoints.length);
+    }
+
+    // Build markers with date labels
+    final markers = <Marker>[];
+    for (int i = 0; i < locs.length; i++) {
+      final loc = locs[i];
+      final lat = (loc['latitude'] as num).toDouble();
+      final lng = (loc['longitude'] as num).toDouble();
+      final arrival = loc['arrival'] as String?;
+      String dateLabel = '${i + 1}';
+      if (arrival != null) {
+        try {
+          final dt = DateTime.parse(arrival);
+          dateLabel = '${dt.month}/${dt.day}';
+        } catch (_) {}
+      }
+      markers.add(
+        Marker(
+          point: LatLng(lat, lng),
+          width: 52,
+          height: 52,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFF2E86C1), Color(0xFF6BBF7A)],
+                  ),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.location_on_rounded,
+                  color: Colors.white,
+                  size: 16,
+                ),
+              ),
+              Text(
+                dateLabel,
+                style: GoogleFonts.sora(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        // Map with route
+        Expanded(
+          flex: 5,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: FlutterMap(
+                options: MapOptions(initialCenter: center, initialZoom: 7),
+                children: [
+                  TileLayer(
+                    urlTemplate:
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.quemory.app',
+                  ),
+                  if (routePoints.length >= 2)
+                    PolylineLayer(
+                      polylines: [
+                        Polyline(
+                          points: routePoints,
+                          color: const Color(0xFF2E86C1),
+                          strokeWidth: 3,
+                        ),
+                      ],
+                    ),
+                  MarkerLayer(markers: markers),
+                ],
+              ),
+            ),
+          ),
+        ),
+        // Single photo viewer with nav
+        if (photos.isNotEmpty)
+          Expanded(
+            flex: 4,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: _buildPhotoViewer(photos),
+            ),
+          ),
+        if (photos.isEmpty) const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _buildPhotoViewer(List<Map<String, dynamic>> photos) {
+    final photo = photos[_photoIndex];
+    final path = photo['path'] as String;
+    final name = photo['name'] as String? ?? '';
+    final timestamp = photo['timestamp'] as String?;
+    final lat = photo['latitude'];
+    final lon = photo['longitude'];
+    final score = photo['aesthetic_score'];
+
+    String dateStr = '';
+    if (timestamp != null) {
+      try {
+        final dt = DateTime.parse(timestamp);
+        dateStr =
+            '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}  ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      } catch (_) {
+        dateStr = timestamp;
+      }
+    }
+
+    String coordStr = '';
+    if (lat != null && lon != null) {
+      coordStr =
+          '${(lat as num).toStringAsFixed(4)}, ${(lon as num).toStringAsFixed(4)}';
+    }
+
+    return Column(
+      children: [
+        // Photo
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Image.file(
+              File(path),
+              width: double.infinity,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                color: Colors.grey.shade900,
+                child: const Center(
+                  child: Icon(
+                    Icons.broken_image,
+                    color: Colors.white38,
+                    size: 48,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Metadata
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: GoogleFonts.sora(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (dateStr.isNotEmpty)
+                    Text(
+                      dateStr,
+                      style: GoogleFonts.sora(
+                        fontSize: 12,
+                        color: Colors.white60,
+                      ),
+                    ),
+                  if (coordStr.isNotEmpty)
+                    Text(
+                      coordStr,
+                      style: GoogleFonts.sora(
+                        fontSize: 12,
+                        color: Colors.white60,
+                      ),
+                    ),
+                  if (score != null)
+                    Text(
+                      'Score: ${(score as num).toStringAsFixed(3)}',
+                      style: GoogleFonts.sora(
+                        fontSize: 12,
+                        color: const Color(0xFF6BBF7A),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Text(
+              '${_photoIndex + 1} / ${photos.length}',
+              style: GoogleFonts.sora(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.white54,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        // Nav buttons
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              onPressed: _photoIndex > 0
+                  ? () => setState(() => _photoIndex--)
+                  : null,
+              icon: const Icon(Icons.arrow_back_ios_rounded, size: 20),
+              color: Colors.white,
+              disabledColor: Colors.white24,
+            ),
+            const SizedBox(width: 32),
+            IconButton(
+              onPressed: _photoIndex < photos.length - 1
+                  ? () => setState(() => _photoIndex++)
+                  : null,
+              icon: const Icon(Icons.arrow_forward_ios_rounded, size: 20),
+              color: Colors.white,
+              disabledColor: Colors.white24,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }

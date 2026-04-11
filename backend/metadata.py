@@ -312,6 +312,7 @@ def extract_software(exif: dict, image_path: str) -> dict:
         "is_edited": False,
         "is_screenshot": False,
         "is_downloaded": False,
+        "origin": "self",
     }
 
     if "Software" in exif:
@@ -334,6 +335,25 @@ def extract_software(exif: dict, image_path: str) -> dict:
 
     if not exif or len(exif) < 3:
         result["is_downloaded"] = True
+
+    # Check filename patterns for messaging apps
+    fname = Path(image_path).name.lower()
+    _received_patterns = [
+        "img-" in fname and "-wa" in fname,       # WhatsApp
+        fname.startswith("signal-"),                # Signal
+        fname.startswith("fb_img_"),                # Facebook
+        fname.startswith("photo_") and "Model" not in exif,  # Telegram
+    ]
+
+    # Determine canonical origin
+    if result["is_screenshot"]:
+        result["origin"] = "screenshot"
+    elif result["is_downloaded"] or any(_received_patterns):
+        result["origin"] = "received"
+    elif result["is_edited"]:
+        result["origin"] = "edited"
+    else:
+        result["origin"] = "self"
 
     return result
 

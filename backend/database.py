@@ -6,7 +6,7 @@ DB_PATH = os.path.join(DB_DIR, "quemory.db")
 
 
 def create_database():
-    """Create the database folder and quemory.db with an images table."""
+    """Create the database folder and quemory.db with all tables."""
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -22,6 +22,12 @@ def create_database():
         CREATE TABLE IF NOT EXISTS trips (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            start_date TEXT,
+            end_date TEXT,
+            cover_photo_path TEXT,
+            description TEXT,
+            total_photos INTEGER DEFAULT 0,
+            total_key_photos INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -31,7 +37,34 @@ def create_database():
             trip_id INTEGER NOT NULL,
             file_path TEXT NOT NULL,
             file_name TEXT NOT NULL,
-            FOREIGN KEY (trip_id) REFERENCES trips(id)
+            timestamp TEXT,
+            latitude REAL,
+            longitude REAL,
+            aesthetic_score REAL,
+            is_key_photo INTEGER DEFAULT 0,
+            FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trip_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trip_id INTEGER NOT NULL,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            label TEXT,
+            arrival TEXT,
+            departure TEXT,
+            photo_count INTEGER DEFAULT 0,
+            FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS home_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            radius_km REAL NOT NULL DEFAULT 5.0,
+            label TEXT
         )
     """)
     conn.commit()
@@ -66,28 +99,19 @@ def fetch_images():
     conn.close()
 
 
-def create_trip(name: str) -> int:
+def create_trip(name: str, start_date: str = None, end_date: str = None,
+                cover_photo_path: str = None, description: str = None,
+                total_photos: int = 0, total_key_photos: int = 0) -> int:
     """Create a new trip and return its id."""
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trips (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trip_photos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trip_id INTEGER NOT NULL,
-            file_path TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            FOREIGN KEY (trip_id) REFERENCES trips(id)
-        )
-    """)
-    cursor.execute("INSERT INTO trips (name) VALUES (?)", (name,))
+        INSERT INTO trips (name, start_date, end_date, cover_photo_path,
+                           description, total_photos, total_key_photos)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (name, start_date, end_date, cover_photo_path, description,
+          total_photos, total_key_photos))
     trip_id = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -95,12 +119,39 @@ def create_trip(name: str) -> int:
 
 
 def save_trip_photos(trip_id: int, photos: list[dict]):
-    """Save curated photos for a trip. Each photo is {'path': ..., 'name': ...}."""
+    """Save photos for a trip.
+
+    Each photo dict can have:
+        path, name, timestamp, latitude, longitude, aesthetic_score, is_key_photo
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.executemany(
-        "INSERT INTO trip_photos (trip_id, file_path, file_name) VALUES (?, ?, ?)",
-        [(trip_id, p["path"], p["name"]) for p in photos],
+        """INSERT INTO trip_photos
+           (trip_id, file_path, file_name, timestamp, latitude, longitude,
+            aesthetic_score, is_key_photo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        [(trip_id, p["path"], p["name"],
+          p.get("timestamp"), p.get("latitude"), p.get("longitude"),
+          p.get("aesthetic_score"), int(p.get("is_key_photo", False)))
+         for p in photos],
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_trip_locations(trip_id: int, locations: list[dict]):
+    """Save geographic stops for a trip."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.executemany(
+        """INSERT INTO trip_locations
+           (trip_id, latitude, longitude, label, arrival, departure, photo_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [(trip_id, loc["latitude"], loc["longitude"],
+          loc.get("label"), loc.get("arrival"), loc.get("departure"),
+          loc.get("photo_count", 0))
+         for loc in locations],
     )
     conn.commit()
     conn.close()
@@ -111,20 +162,82 @@ def get_trip_photos(trip_id: int) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT file_path, file_name FROM trip_photos WHERE trip_id = ?",
+        """SELECT file_path, file_name, timestamp, latitude, longitude,
+                  aesthetic_score, is_key_photo
+           FROM trip_photos WHERE trip_id = ? ORDER BY timestamp""",
         (trip_id,),
     ).fetchall()
     conn.close()
-    return [{"path": r["file_path"], "name": r["file_name"]} for r in rows]
+    return [{"path": r["file_path"], "name": r["file_name"],
+             "timestamp": r["timestamp"], "latitude": r["latitude"],
+             "longitude": r["longitude"],
+             "aesthetic_score": r["aesthetic_score"],
+             "is_key_photo": bool(r["is_key_photo"])} for r in rows]
+
+
+def get_trip_locations(trip_id: int) -> list[dict]:
+    """Load geographic stops for a trip."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT latitude, longitude, label, arrival, departure, photo_count
+           FROM trip_locations WHERE trip_id = ? ORDER BY arrival""",
+        (trip_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def list_trips() -> list[dict]:
     """List all trips."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT id, name, created_at FROM trips ORDER BY created_at DESC").fetchall()
+    rows = conn.execute(
+        """SELECT id, name, start_date, end_date, cover_photo_path,
+                  description, total_photos, total_key_photos, created_at
+           FROM trips ORDER BY start_date DESC""",
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_home_locations() -> list[dict]:
+    """Return all configured home locations."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, latitude, longitude, radius_km, label FROM home_locations"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_home_location(latitude: float, longitude: float,
+                      radius_km: float = 5.0, label: str = None) -> int:
+    """Add a home location. Returns the row id."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO home_locations (latitude, longitude, radius_km, label)
+           VALUES (?, ?, ?, ?)""",
+        (latitude, longitude, radius_km, label),
+    )
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def update_trip_description(trip_id: int, description: str) -> None:
+    """Update the description column for a trip."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE trips SET description = ? WHERE id = ?",
+        (description, trip_id),
+    )
+    conn.commit()
+    conn.close()
+
 
 if __name__ == "__main__":
     fetch_images()

@@ -218,6 +218,7 @@ def extract_all_features(image_path: str, embedding: np.ndarray, exif: dict) -> 
         "megapixels": props.get("megapixels", 0),
         "is_screenshot": software.get("is_screenshot", False),
         "is_downloaded": software.get("is_downloaded", False),
+        "origin": software.get("origin", "self"),
         "phash": phash,
         "sharpness": pixel["sharpness"],
         "exposure_quality": pixel["exposure_quality"],
@@ -377,14 +378,26 @@ def _normalize(values: list[float]) -> list[float]:
     return [(v - lo) / (hi - lo) for v in values]
 
 
-def compute_composite_score(f: dict, norm_sharp: float, norm_mp: float) -> float:
-    return (
+_ORIGIN_MULTIPLIER = {
+    "self": 1.0,
+    "edited": 1.0,
+    "received": 0.5,
+    "screenshot": 0.2,
+}
+
+
+def compute_composite_score(f: dict, norm_sharp: float, norm_mp: float,
+                            origin: str | None = None) -> float:
+    raw = (
         0.30 * f["aesthetic_score"]
         + 0.25 * norm_sharp
         + 0.20 * f["exposure_quality"]
         + 0.15 * f["saturation"]
         + 0.10 * norm_mp
     )
+    if origin is None:
+        origin = f.get("origin", "self")
+    return raw * _ORIGIN_MULTIPLIER.get(origin, 1.0)
 
 
 def rank_and_select(
