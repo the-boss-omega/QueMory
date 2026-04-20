@@ -84,10 +84,9 @@ def api_create_trip(req: CreateTripRequest):
             "path": _get_display_path(item["path"], item["name"]),
             "name": item["name"],
         })
-    description = None
     try:
-        from summarize import generate_summary
-        description = generate_summary(trip_id, user_notes=req.notes)
+        from summerize import generate_summary
+        notes = generate_summary(trip_id,user_notes=req.notes)
     except Exception as e:
         print(f"[server] Summary generation failed: {e}")
     return {"trip_id": trip_id, "name": req.name, "photo_count": len(display_photos), "description": description}
@@ -169,7 +168,12 @@ def api_detect_trips(folder: str = Query(None)):
             features_list.append(features)
 
     results = detect_and_save_all(features_list)
-    return {"trips_detected": len(results), "trips": results}
+    from database import get_unassigned_images
+    return {
+        "new_trips": len(results),
+        "trips": results,
+        "unassigned_remaining": len(get_unassigned_images()),
+    }
 
 
 class HomeLocationRequest(BaseModel):

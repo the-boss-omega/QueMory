@@ -15,7 +15,10 @@ def create_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT NOT NULL UNIQUE,
             file_name TEXT NOT NULL,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            trip_id INTEGER,
+            trip_status TEXT DEFAULT 'unassigned',
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (trip_id) REFERENCES trips(id)
         )
     """)
     cursor.execute("""
@@ -67,8 +70,74 @@ def create_database():
             label TEXT
         )
     """)
+        # Migration: add columns if they don't exist yet
+    try:
+        cursor.execute("ALTER TABLE images ADD COLUMN trip_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        cursor.execute("ALTER TABLE images ADD COLUMN trip_status TEXT DEFAULT 'unassigned'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
+
+def get_unassigned_images():
+    """Get only images that haven't been checked for trips yet."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT id, file_path, file_name
+        FROM images
+        WHERE trip_status = 'unassigned'
+        ORDER BY file_name
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_images_assigned(image_ids: list, trip_id: int):
+    """Mark images as belonging to a trip."""
+    if not image_ids:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    placeholders = ','.join('?' * len(image_ids))
+    conn.execute(f"""
+        UPDATE images
+        SET trip_id = ?, trip_status = 'assigned'
+        WHERE id IN ({placeholders})
+    """, [trip_id] + image_ids)
+    conn.commit()
+    conn.close()
+
+
+def mark_images_excluded(image_ids: list):
+    """Mark images as checked but not part of any trip (daily life)."""
+    if not image_ids:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    placeholders = ','.join('?' * len(image_ids))
+    conn.execute(f"""
+        UPDATE images
+        SET trip_status = 'excluded'
+        WHERE id IN ({placeholders})
+    """, image_ids)
+    conn.commit()
+    conn.close()
+
+
+def get_image_ids_by_paths(file_paths: list) -> dict:
+    """Given file paths, return a dict of {file_path: image_id}."""
+    if not file_paths:
+        return {}
+    conn = sqlite3.connect(DB_PATH)
+    placeholders = ','.join('?' * len(file_paths))
+    rows = conn.execute(f"""
+        SELECT id, file_path FROM images
+        WHERE file_path IN ({placeholders})
+    """, file_paths).fetchall()
+    conn.close()
+    return {row[1]: row[0] for row in rows}
 
 
 def save_image(file_path: str):
@@ -227,7 +296,6 @@ def add_home_location(latitude: float, longitude: float,
     conn.close()
     return row_id
 
-
 def update_trip_description(trip_id: int, description: str) -> None:
     """Update the description column for a trip."""
     conn = sqlite3.connect(DB_PATH)
@@ -237,7 +305,6 @@ def update_trip_description(trip_id: int, description: str) -> None:
     )
     conn.commit()
     conn.close()
-
 
 if __name__ == "__main__":
     fetch_images()

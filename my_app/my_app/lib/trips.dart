@@ -50,6 +50,20 @@ class _TripsPageState extends State<TripsPage> {
     }
   }
 
+  // Future<void> _detectTrips() async {
+  //   setState(() => _isDetecting = true);
+  //   try {
+  //     final response = await http.post(
+  //       Uri.parse('http://localhost:8000/detect-trips'),
+  //     );
+  //     if (response.statusCode == 200) {
+  //       await _loadTrips();
+  //     }
+  //   } catch (e) {
+  //     debugPrint('Detect trips error: $e');
+  //   }
+  //   setState(() => _isDetecting = false);
+  // }
   Future<void> _detectTrips() async {
     setState(() => _isDetecting = true);
     try {
@@ -57,10 +71,52 @@ class _TripsPageState extends State<TripsPage> {
         Uri.parse('http://localhost:8000/detect-trips'),
       );
       if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final newTrips = data['new_trips'] as int? ?? 0;
+        final merged = data['merged'] as int? ?? 0;
+        final excluded = data['excluded'] as int? ?? 0;
+
         await _loadTrips();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                newTrips > 0
+                    ? '$newTrips new trip${newTrips > 1 ? 's' : ''} found!'
+                    : merged > 0
+                    ? 'Added photos to existing trips'
+                    : 'No new trips detected',
+                style: GoogleFonts.sora(fontWeight: FontWeight.w500),
+              ),
+              backgroundColor: newTrips > 0
+                  ? const Color(0xFF2D8B4E)
+                  : const Color(0xFF2E86C1),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       debugPrint('Detect trips error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to detect trips. Is the server running?',
+              style: GoogleFonts.sora(fontWeight: FontWeight.w500),
+            ),
+            backgroundColor: Colors.red.shade600,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        );
+      }
     }
     setState(() => _isDetecting = false);
   }

@@ -18,7 +18,8 @@ Algorithm
 import math
 from datetime import datetime, timedelta
 from collections import defaultdict
-
+import sqlite3
+from database import DB_PATH
 import numpy as np
 from sklearn.cluster import DBSCAN
 
@@ -344,12 +345,6 @@ def save_detected_trip(photos: list[dict], name: str | None = None) -> dict:
     save_trip_photos(trip_id, photo_rows)
     save_trip_locations(trip_id, stops)
 
-    try:
-        from summarize import generate_summary
-        generate_summary(trip_id)
-    except Exception as e:
-        print(f"[trips] Summary generation failed: {e}")
-
     return {
         "trip_id": trip_id,
         "name": name,
@@ -380,28 +375,112 @@ def _overlaps_existing(start_iso: str | None, end_iso: str | None,
 
 def detect_and_save_all(features_list: list[dict],
                         homes: list[dict] | None = None) -> list[dict]:
-    """Run trip detection, persist only NEW trips, return summaries."""
+    """Run trip detection only on unassigned images. Mark everything after."""
+    from database import (
+        get_unassigned_images, get_image_ids_by_paths,
+        mark_images_assigned, mark_images_excluded,
+    )
+
     create_database()
+
+    # Step 1: Get only unassigned image paths
+    unassigned = get_unassigned_images()
+    unassigned_paths = {img['file_path'] for img in unassigned}
+
+    if not unassigned_paths:
+        print("[trips] No new images to process.")
+        return []
+
+    # Step 2: Filter features_list to only unassigned photos
+    new_features = [f for f in features_list if f.get("path") in unassigned_paths]
+
+    if not new_features:
+        print("[trips] No unassigned photos with features found.")
+        return []
+
+    print(f"[trips] Processing {len(new_features)} new images (skipping {len(features_list) - len(new_features)} already processed)")
+
+    # Step 3: Run trip detection on new photos only
     existing = list_trips()
-    trips = detect_trips(features_list, homes)
+    trips = detect_trips(new_features, homes)
+
+    # Build path → image_id lookup
+    all_new_paths = [f["path"] for f in new_features]
+    path_to_id = get_image_ids_by_paths(all_new_paths)
+
     results = []
+    assigned_paths = set()
     skipped = 0
+
     for trip_photos in trips:
         times = sorted([p["timestamp"] for p in trip_photos if p.get("timestamp")])
         start_date = times[0].isoformat() if times else None
         end_date = times[-1].isoformat() if times else None
 
-        if _overlaps_existing(start_date, end_date, existing):
+        trip_paths = [p["path"] for p in trip_photos]
+        trip_image_ids = [path_to_id[p] for p in trip_paths if p in path_to_id]
+
+        # Check if this overlaps an existing trip
+        matched_existing = None
+        for ex in existing:
+            if _overlaps_existing(start_date, end_date, [ex]):
+                matched_existing = ex
+                break
+
+        if matched_existing:
+            # Add new photos to the existing trip
+            mark_images_assigned(trip_image_ids, matched_existing["id"])
+            assigned_paths.update(trip_paths)
+
+            # Also save the photo rows to trip_photos table
+            photo_rows = []
+            for p in trip_photos:
+                photo_rows.append({
+                    "path": p["path"],
+                    "name": p.get("name", ""),
+                    "timestamp": p["timestamp"].isoformat() if p.get("timestamp") else None,
+                    "latitude": p.get("latitude"),
+                    "longitude": p.get("longitude"),
+                    "aesthetic_score": p.get("aesthetic_score"),
+                    "is_key_photo": False,
+                })
+            save_trip_photos(matched_existing["id"], photo_rows)
+
+            # Update trip photo count
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("""
+                UPDATE trips SET total_photos = (
+                    SELECT COUNT(*) FROM trip_photos WHERE trip_id = ?
+                ) WHERE id = ?
+            """, (matched_existing["id"], matched_existing["id"]))
+            conn.commit()
+            conn.close()
+
+            print(f"[trips] Added {len(trip_image_ids)} photos to existing trip '{matched_existing['name']}'")
             skipped += 1
-            print(f"[trips] Skipped (already exists): {start_date} – {end_date}")
             continue
 
+        # Save as new trip
         summary = save_detected_trip(trip_photos)
         results.append(summary)
-        print(f"[trips] Saved trip '{summary['name']}': "
+
+        # Mark images as assigned to the new trip
+        mark_images_assigned(trip_image_ids, summary["trip_id"])
+        assigned_paths.update(trip_paths)
+
+        print(f"[trips] Saved NEW trip '{summary['name']}': "
               f"{summary['total_photos']} photos, "
               f"{summary['total_key_photos']} key, "
               f"{summary['locations']} stops")
+
+    # Step 4: Mark remaining unassigned images as excluded (near home / too few)
+    excluded_paths = unassigned_paths - assigned_paths
+    excluded_ids = [path_to_id[p] for p in excluded_paths if p in path_to_id]
+    if excluded_ids:
+        mark_images_excluded(excluded_ids)
+        print(f"[trips] Excluded {len(excluded_ids)} images (daily life / too few)")
+
     if skipped:
-        print(f"[trips] {skipped} trip(s) skipped (duplicates)")
+        print(f"[trips] {skipped} cluster(s) merged into existing trips")
+
     return results
