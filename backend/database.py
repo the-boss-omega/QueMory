@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import face
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "database")
 DB_PATH = os.path.join(DB_DIR, "quemory.db")
@@ -28,6 +29,9 @@ def create_database():
             start_date TEXT,
             end_date TEXT,
             cover_photo_path TEXT,
+            most_frequent_face TEXT,
+            top_face_bbox TEXT,
+            top_face_count INTEGER,
             description TEXT,
             total_photos INTEGER DEFAULT 0,
             total_key_photos INTEGER DEFAULT 0,
@@ -77,6 +81,10 @@ def create_database():
         pass  # column already exists
     try:
         cursor.execute("ALTER TABLE images ADD COLUMN trip_status TEXT DEFAULT 'unassigned'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE trips ADD COLUMN most_frequent_face TEXT")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -305,6 +313,30 @@ def update_trip_description(trip_id: int, description: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def get_trip_image_paths(trip_id: int) -> list[str]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    rows = cursor.execute(
+        "SELECT file_path FROM images WHERE trip_id = ?",
+        (trip_id,)
+    ).fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+def update_frequent_face(trip_id: int) -> None:
+    image_paths = get_trip_image_paths(trip_id)
+    results = face.find_top_face(image_paths)
+    """Store the path to the most frequently appearing face in a trip."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE trips SET most_frequent_face = ? SET top_face_bbox = ? SET top_face_count = ? WHERE id = ?",
+        (results["image_path"], results["bbox"], results["count"], trip_id),
+    )
+    conn.commit()
+    conn.close()
+
 
 if __name__ == "__main__":
     fetch_images()
