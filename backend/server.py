@@ -1,18 +1,34 @@
 import os
 import tempfile
-from fastapi import FastAPI, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Query, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from clip_embed import search, save_all_embeddings
+from clip_embed import search, search_expanded, save_all_embeddings, IMAGES_FOLDER
 from filter import curate
 from database import (
     create_trip, save_trip_photos, get_trip_photos, get_trip_locations,
     list_trips, get_home_locations, add_home_location, create_database,
+    add_photos_to_trip, update_cover_photo,
 )
 from trips import detect_and_save_all
 from PIL import Image
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+create_database()
+
+# Auto-index any images that don't have embeddings yet
+try:
+    from clip_embed import save_all_embeddings
+    save_all_embeddings()
+except Exception as _e:
+    print(f"[server] Embedding index skipped: {_e}")
 
 _heic_cache: dict[str, str] = {}
 
@@ -35,8 +51,9 @@ def _get_display_path(file_path: str, file_name: str) -> str:
 
 
 @app.get("/search")
-def api_search(q: str = Query(...), top_k: int = Query(5)):
-    results = search(q, top_k)
+def api_search(q: str = Query(...), top_k: int = Query(5), expand: bool = Query(True)):
+    """Semantic image search. Use expand=true (default) for multi-prompt query expansion."""
+    results = search_expanded(q, top_k) if expand else search(q, top_k)
     return [
         {
             "path": _get_display_path(path, name),
@@ -45,6 +62,7 @@ def api_search(q: str = Query(...), top_k: int = Query(5)):
         }
         for path, name, score in results
     ]
+
 
 
 @app.post("/embed")
@@ -76,20 +94,25 @@ class CreateTripRequest(BaseModel):
 @app.post("/trips")
 def api_create_trip(req: CreateTripRequest):
     result = curate(req.folder)
-    trip_id = create_trip(req.name)
+    trip_id = create_trip(req.name, total_photos=len(result["keep"]))
     save_trip_photos(trip_id, result["keep"])
-    display_photos = []
-    for item in result["keep"]:
-        display_photos.append({
-            "path": _get_display_path(item["path"], item["name"]),
-            "name": item["name"],
-        })
+    update_cover_photo(trip_id)
+    description = ""
     try:
-        from summerize import generate_summary
-        notes = generate_summary(trip_id,user_notes=req.notes)
+        from summarize import generate_summary
+        description = generate_summary(trip_id, user_notes=req.notes) or ""
     except Exception as e:
         print(f"[server] Summary generation failed: {e}")
-    return {"trip_id": trip_id, "name": req.name, "photo_count": len(display_photos), "description": description}
+    display_photos = [
+        {"path": _get_display_path(item["path"], item["name"]), "name": item["name"]}
+        for item in result["keep"]
+    ]
+    return {
+        "trip_id": trip_id,
+        "name": req.name,
+        "photo_count": len(display_photos),
+        "description": description,
+    }
 
 
 @app.get("/trips")
@@ -167,11 +190,13 @@ def api_detect_trips(folder: str = Query(None)):
         if features.get("timestamp") is not None:
             features_list.append(features)
 
-    results = detect_and_save_all(features_list)
+    detection = detect_and_save_all(features_list)
     from database import get_unassigned_images
     return {
-        "new_trips": len(results),
-        "trips": results,
+        "new_trips": len(detection["trips"]),
+        "trips": detection["trips"],
+        "merged": detection["merged"],
+        "excluded": detection["excluded"],
         "unassigned_remaining": len(get_unassigned_images()),
     }
 
@@ -192,3 +217,74 @@ def api_add_home(req: HomeLocationRequest):
 @app.get("/home-locations")
 def api_list_homes():
     return get_home_locations()
+
+
+# ─── Analytics ────────────────────────────────────────────────────────────────
+
+@app.get("/trips/{trip_id}/analytics")
+def api_trip_analytics(trip_id: int, force: bool = Query(False)):
+    """Return (cached) analytics for a trip. Use ?force=true to recompute."""
+    from analytics import compute_all_analytics
+    try:
+        data = compute_all_analytics(trip_id, force=force)
+        return JSONResponse(content=data)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/trips/{trip_id}/add-photos")
+def api_add_photos(trip_id: int, req: CreateTripRequest, background_tasks: BackgroundTasks):
+    """Add photos from a folder to an existing trip."""
+    from analytics import invalidate_cache
+    if not req.folder:
+        return JSONResponse(status_code=400, content={"error": "folder required"})
+    result = curate(req.folder)
+    inserted = add_photos_to_trip(trip_id, result["keep"])
+    update_cover_photo(trip_id)
+    # Invalidate analytics cache so next fetch recomputes
+    background_tasks.add_task(invalidate_cache, trip_id)
+    return {"trip_id": trip_id, "inserted": inserted}
+
+
+# ─── Wrapped stats ────────────────────────────────────────────────────────────
+
+@app.get("/wrapped/stats")
+def api_wrapped_stats():
+    """Aggregate statistics across all trips for the Wrapped page."""
+    from analytics import compute_wrapped_stats
+    return JSONResponse(content=compute_wrapped_stats())
+
+@app.get("/image")
+def api_get_image(path: str = Query(...)):
+    from pathlib import Path
+    resolved = Path(path).resolve()
+    allowed_roots = [
+        Path(IMAGES_FOLDER).resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    ]
+    if not any(str(resolved).startswith(str(root)) for root in allowed_roots):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    display = _get_display_path(path, os.path.basename(path))
+    return FileResponse(display)
+
+@app.get("/trips/{trip_id}/ben-aharon")
+def api_ben_aharon_page(trip_id: int, force: bool = Query(False)):
+    """Serve the Ben Aharon Marenkov Special as a standalone LLM-generated HTML page."""
+    from analytics import compute_all_analytics
+    from summarize import generate_ben_aharon_html
+
+    all_trips = list_trips()
+    trip = next((t for t in all_trips if t["id"] == trip_id), None)
+    if trip is None:
+        return JSONResponse(status_code=404, content={"error": "trip not found"})
+
+    try:
+        analytics = compute_all_analytics(trip_id, force=force)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    key_photos = analytics.get("key_photos", {}).get("photos", [])
+    image_paths = [p["path"] for p in key_photos if p.get("is_key")]
+
+    html = generate_ben_aharon_html(trip["name"], analytics, image_paths, trip.get("description"))
+    return HTMLResponse(content=html)

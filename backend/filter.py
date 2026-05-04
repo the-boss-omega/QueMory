@@ -616,7 +616,14 @@ def curate(folder: str = None, max_images: int = TARGET_IMAGES) -> dict:
         print(f"  Final gap={best_gap:.0f}s → {len(keep_indices)} images")
 
     keep = [
-        {"path": features_list[i]["path"], "name": features_list[i]["name"]}
+        {
+            "path": features_list[i]["path"],
+            "name": features_list[i]["name"],
+            "timestamp": features_list[i].get("timestamp"),
+            "latitude": features_list[i].get("latitude"),
+            "longitude": features_list[i].get("longitude"),
+            "aesthetic_score": features_list[i].get("aesthetic_score"),
+        }
         for i in keep_indices
     ]
 

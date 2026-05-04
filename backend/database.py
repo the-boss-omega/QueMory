@@ -11,6 +11,7 @@ def create_database():
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS images (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +75,14 @@ def create_database():
             label TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trip_analytics (
+            trip_id INTEGER PRIMARY KEY,
+            analytics_json TEXT NOT NULL,
+            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
+        )
+    """)
         # Migration: add columns if they don't exist yet
     try:
         cursor.execute("ALTER TABLE images ADD COLUMN trip_id INTEGER")
@@ -85,6 +94,21 @@ def create_database():
         pass
     try:
         cursor.execute("ALTER TABLE trips ADD COLUMN most_frequent_face TEXT")
+    except sqlite3.OperationalError:
+        pass
+    cursor.execute("""
+        DELETE FROM trip_photos
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM trip_photos
+            GROUP BY trip_id, file_path
+        )
+    """)
+    try:
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trip_photos_trip_file
+            ON trip_photos (trip_id, file_path)
+        """)
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -168,7 +192,7 @@ def save_image(file_path: str):
     return row_id
 
 def fetch_images():
-    conn = sqlite3.connect(r"D:\\Proj\\QueMory2\\backend\\database\\quemory.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM images").fetchall()
     for row in rows:
@@ -204,7 +228,7 @@ def save_trip_photos(trip_id: int, photos: list[dict]):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.executemany(
-        """INSERT INTO trip_photos
+        """INSERT OR IGNORE INTO trip_photos
            (trip_id, file_path, file_name, timestamp, latitude, longitude,
             aesthetic_score, is_key_photo)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -271,7 +295,8 @@ def list_trips() -> list[dict]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """SELECT id, name, start_date, end_date, cover_photo_path,
-                  description, total_photos, total_key_photos, created_at
+                  description, total_photos, total_key_photos, created_at,
+                  most_frequent_face, top_face_bbox, top_face_count
            FROM trips ORDER BY start_date DESC""",
     ).fetchall()
     conn.close()
@@ -326,16 +351,99 @@ def get_trip_image_paths(trip_id: int) -> list[str]:
     return [row[0] for row in rows]
 
 def update_frequent_face(trip_id: int) -> None:
+    """Detect and store the most frequently appearing face in a trip."""
     image_paths = get_trip_image_paths(trip_id)
+    if not image_paths:
+        return
     results = face.find_top_face(image_paths)
-    """Store the path to the most frequently appearing face in a trip."""
+    if not results:
+        return
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "UPDATE trips SET most_frequent_face = ? SET top_face_bbox = ? SET top_face_count = ? WHERE id = ?",
-        (results["image_path"], results["bbox"], results["count"], trip_id),
+        """UPDATE trips
+           SET most_frequent_face = ?,
+               top_face_bbox      = ?,
+               top_face_count     = ?
+           WHERE id = ?""",
+        (
+            results.get("image_path"),
+            str(results.get("bbox", "")),
+            results.get("count"),
+            trip_id,
+        ),
     )
     conn.commit()
     conn.close()
+
+
+def add_photos_to_trip(trip_id: int, photos: list[dict]) -> int:
+    """Append new photos to an existing trip and refresh cover photo.
+    Returns number of newly inserted photos.
+    """
+    if not photos:
+        return 0
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    inserted = 0
+    for p in photos:
+        try:
+            cursor.execute(
+                """INSERT OR IGNORE INTO trip_photos
+                   (trip_id, file_path, file_name, timestamp, latitude, longitude,
+                    aesthetic_score, is_key_photo)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    trip_id, p["path"], p["name"],
+                    p.get("timestamp"), p.get("latitude"), p.get("longitude"),
+                    p.get("aesthetic_score"), int(p.get("is_key_photo", False)),
+                ),
+            )
+            inserted += cursor.rowcount
+        except Exception:
+            pass
+    conn.commit()
+
+    # Update total_photos count
+    conn.execute(
+        "UPDATE trips SET total_photos = (SELECT COUNT(*) FROM trip_photos WHERE trip_id = ?) WHERE id = ?",
+        (trip_id, trip_id),
+    )
+
+    # Update cover photo = best aesthetic_score photo
+    best = conn.execute(
+        """SELECT file_path FROM trip_photos
+           WHERE trip_id = ? AND aesthetic_score IS NOT NULL
+           ORDER BY aesthetic_score DESC LIMIT 1""",
+        (trip_id,),
+    ).fetchone()
+    if best:
+        conn.execute(
+            "UPDATE trips SET cover_photo_path = ? WHERE id = ?",
+            (best[0], trip_id),
+        )
+    conn.commit()
+    conn.close()
+    return inserted
+
+
+def update_cover_photo(trip_id: int) -> str | None:
+    """Set cover_photo_path to the highest aesthetic_score photo. Returns path or None."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        """SELECT file_path FROM trip_photos
+           WHERE trip_id = ? AND aesthetic_score IS NOT NULL
+           ORDER BY aesthetic_score DESC LIMIT 1""",
+        (trip_id,),
+    ).fetchone()
+    path = row[0] if row else None
+    if path:
+        conn.execute(
+            "UPDATE trips SET cover_photo_path = ? WHERE id = ?",
+            (path, trip_id),
+        )
+        conn.commit()
+    conn.close()
+    return path
 
 
 if __name__ == "__main__":

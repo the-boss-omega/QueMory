@@ -2,19 +2,37 @@
 import cv2
 import cv2 as cv
 import numpy as np
+import os
 from sklearn.preprocessing import normalize
 from sklearn.cluster import DBSCAN
 from collections import Counter
 
-YUNET_MODEL = "face_detection_yunet_2023mar.onnx"
-SFACE_MODEL = "face_recognition_sface_2021dec.onnx"
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+YUNET_MODEL = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+SFACE_MODEL = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 
-detector = cv.FaceDetectorYN.create(
-    YUNET_MODEL, "", (320, 320), 0.9, 0.3, 5000
-)
-recognizer = cv.FaceRecognizerSF.create(SFACE_MODEL, "")
+detector = None
+recognizer = None
+
+
+def _ensure_models_loaded():
+    global detector, recognizer
+    if detector is not None and recognizer is not None:
+        return detector, recognizer
+
+    if not os.path.exists(YUNET_MODEL):
+        raise FileNotFoundError(f"Missing face detector model: {YUNET_MODEL}")
+    if not os.path.exists(SFACE_MODEL):
+        raise FileNotFoundError(f"Missing face recognizer model: {SFACE_MODEL}")
+
+    detector = cv.FaceDetectorYN.create(
+        YUNET_MODEL, "", (320, 320), 0.9, 0.3, 5000
+    )
+    recognizer = cv.FaceRecognizerSF.create(SFACE_MODEL, "")
+    return detector, recognizer
 
 def extract_faces_for_embedding(imgPath: str) -> list[dict]:
+    detector, recognizer = _ensure_models_loaded()
     img = cv2.imread(imgPath)
     if img is None:
         raise ValueError(f"Cannot read image: {imgPath}")
@@ -37,6 +55,7 @@ def extract_faces_for_embedding(imgPath: str) -> list[dict]:
     return results
 
 def faces_to_embeddings(face_items: list[dict]) -> list[dict]:
+    _, recognizer = _ensure_models_loaded()
     results = []
     for item in face_items:
         emb = recognizer.feature(item["aligned_face"]).flatten().astype(np.float32)

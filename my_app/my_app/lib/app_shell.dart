@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-// import 'package:my_app/wrapped.dart';
 import 'trips.dart';
 import 'query.dart';
+import 'wrapped.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -18,7 +18,7 @@ class _AppShellState extends State<AppShell> {
     Scaffold(body: Center(child: Text('Share'))),
     TripsPage(),
     QueryPage(),
-    Scaffold(body: Center(child: Text('Wrapped'))),
+    WrappedPage(),
     Scaffold(body: Center(child: Text('Settings'))),
   ];
 

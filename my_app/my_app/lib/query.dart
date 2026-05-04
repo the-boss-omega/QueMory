@@ -41,13 +41,14 @@ class _QueryPageState extends State<QueryPage>
     setState(() {
       _isSearching = true;
     });
-    print('searched');
+    debugPrint('searched');
 
     try {
       final uri = Uri.parse(
         'http://localhost:8000/search',
       ).replace(queryParameters: {'q': query, 'top_k': '5'});
       final response = await http.get(uri);
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         final list = jsonDecode(response.body) as List;
@@ -55,14 +56,15 @@ class _QueryPageState extends State<QueryPage>
           _searchResults = list.cast<Map<String, dynamic>>();
         });
         for (final r in _searchResults) {
-          print('  ${r['score']} ${r['name']}');
+          debugPrint('  ${r['score']} ${r['name']}');
         }
       } else {
-        print('Search failed: ${response.statusCode}');
+        debugPrint('Search failed: ${response.statusCode}');
       }
     } catch (e) {
-      print('Search error: $e');
+      debugPrint('Search error: $e');
     } finally {
+      if (!mounted) return;
       setState(() {
         _isSearching = false;
       });

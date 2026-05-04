@@ -3,6 +3,8 @@ Trip summarization: reverse-geocode stops, build a structured prompt,
 call Ollama (Gemma 4) to generate a short personal summary.
 """
 
+import base64
+import io
 import time
 import urllib.request
 import urllib.parse
@@ -99,10 +101,6 @@ def _build_prompt(trip: dict, locations: list[dict], photos: list[dict],
                                  b["latitude"], b["longitude"])
             lines.append(f"- {geo_a['city']} → {geo_b['city']}: {dist:.0f} km")
 
-    # Origin breakdown
-    origin_counts: dict[str, int] = defaultdict(int)
-    for p in photos:
-        origin_counts["total"] += 1
     # Time-of-day breakdown
     time_buckets = {"morning": 0, "afternoon": 0, "evening": 0, "night": 0}
     for p in photos:
@@ -180,3 +178,134 @@ def generate_summary(trip_id: int, user_notes: str | None = None) -> str | None:
         print(f"[summarize] Saved summary ({len(summary)} chars)")
 
     return summary
+
+# ─── Ben Aharon Marenkov Special ─────────────────────────────────────────────
+
+def _build_ben_aharon_prompt(
+    trip_name: str,
+    analytics: dict,
+    image_paths: list[str],
+    description: str | None = None,
+) -> str:
+    """Construct the LLM prompt for the Ben Aharon Marenkov Special HTML page."""
+    lines = []
+    lines.append(f'Trip name: "{trip_name}"')
+
+    # ── Trip description (LLM-generated summary) ──
+    if description and description.strip():
+        lines.append(f'Trip description: "{description.strip()}"')
+
+    # ── Trip stats ──
+    stats = analytics.get("trip_stats", {})
+    if stats:
+        lines.append(f"Duration: {stats.get('duration_days', '?')} days  "
+                     f"({stats.get('start_date', '?')} → {stats.get('end_date', '?')})")
+        lines.append(f"Photos taken: {stats.get('photo_count', '?')}")
+        lines.append(f"Distance covered: {stats.get('distance_km', '?')} km")
+
+    # ── Locations ──
+    map_data = analytics.get("map_of_photos", {})
+    points = map_data.get("points", [])
+    if points:
+        sample = points[:5]
+        lines.append(f"Sample GPS points (lat, lon): "
+                     + ", ".join(f"({p['lat']:.2f}, {p['lon']:.2f})" for p in sample))
+
+    # ── Photography DNA ──
+    dna = analytics.get("photography_dna", {})
+    vibes = dna.get("vibes", [])
+    if vibes:
+        top_vibes = ", ".join(v["label"] for v in vibes[:3])
+        lines.append(f"Photography style: {top_vibes}")
+
+    # ── Emotional tone ──
+    emo = analytics.get("emotional_timeline", {})
+    happiest = emo.get("happiest_day", "")
+    if happiest:
+        lines.append(f"Happiest day: {happiest}")
+
+    # ── Inner circle ──
+    ic = analytics.get("inner_circle", {})
+    faces = ic.get("faces", [])
+    if faces:
+        lines.append(f"People detected: {len(faces)} recurring faces")
+
+    # ── Key photos — model will see them as base64 images ──
+    if image_paths:
+        lines.append(f"Key photos attached: {len(image_paths)} images (see attached images for visual context)")
+
+    lines.append("")
+    lines.append(
+        "You are an expert creative web designer. "
+        "Using the trip data above, generate a single, complete, self-contained HTML page "
+        "for a travel app card called 'The Ben Aharon Marenkov Special'. "
+        "Requirements:\n"
+        "- Dark background with a cinematic gradient that feels personal to this trip\n"
+        "- The trip name displayed large and beautifully (use inline @font-face or system fonts only — NO external CDN links)\n"
+        "- 2–3 subtle animated CSS elements (e.g. floating orbs, shimmer, fade-in)\n"
+        "- A small poetic one-line description that captures the trip's vibe, generated from the data above\n"
+        "- All CSS inline in a <style> block. No JavaScript required.\n"
+        "- Return ONLY the raw HTML starting with <!DOCTYPE html>. No markdown, no explanation."
+    )
+
+    return "\n".join(lines)
+
+
+def _encode_images(paths: list[str], max_images: int = 5, max_px: int = 512) -> list[str]:
+    """Resize and base64-encode up to max_images photos for the vision model."""
+    from PIL import Image as PILImage
+    encoded = []
+    for path in paths[:max_images]:
+        try:
+            img = PILImage.open(path).convert("RGB")
+            img.thumbnail((max_px, max_px))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=75)
+            encoded.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+        except Exception as e:
+            print(f"[ben_aharon] Could not encode image {path}: {e}")
+    return encoded
+
+
+def generate_ben_aharon_html(
+    trip_name: str,
+    analytics: dict,
+    image_paths: list[str],
+    description: str | None = None,
+) -> str:
+    """Call Ollama (vision model) to generate the Ben Aharon Special HTML. Returns HTML string."""
+    prompt = _build_ben_aharon_prompt(trip_name, analytics, image_paths, description)
+    images = _encode_images(image_paths)
+
+    print(f"[ben_aharon] Generating HTML for '{trip_name}' with {len(images)} image(s)...")
+
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "images": images,
+        "stream": False,
+    }).encode()
+
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode())
+        html = data.get("response", "").strip()
+        # Strip markdown fences if the model wraps the output
+        if html.startswith("```"):
+            html = html.split("```", 2)[1]
+            if html.startswith("html"):
+                html = html[4:]
+            html = html.rsplit("```", 1)[0].strip()
+        if not html.lower().startswith("<!doctype") and not html.startswith("<html"):
+            raise ValueError(f"LLM response is not valid HTML: {html[:80]}")
+    except Exception as e:
+        print(f"[ben_aharon] LLM failed, using fallback: {e}")
+        from analytics import analytic_ben_aharon_special
+        html = analytic_ben_aharon_special(trip_name)["html"]
+
+    return html

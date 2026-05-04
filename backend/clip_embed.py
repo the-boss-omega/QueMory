@@ -16,6 +16,7 @@ import clip
 DB_DIR = os.path.join(os.path.dirname(__file__), "database")
 DB_PATH = os.path.join(DB_DIR, "embeddings.db")
 IMAGES_FOLDER = os.path.join(os.path.dirname(__file__), "..", "assets", "images1")
+OLLAMA_MODEL = "gemma4:e4b"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
@@ -114,6 +115,65 @@ def search(query: str, top_k: int = 5):
 
     conn.close()
     return top
+
+
+def _expand_query(query: str, n: int = 4) -> list[str]:
+    """Use Ollama to expand a complex query into simpler CLIP-friendly sub-phrases."""
+    try:
+        import ollama
+        resp = ollama.generate(
+            model=OLLAMA_MODEL,
+            prompt=(
+                f'Given this photo search query: "{query}"\n\n'
+                f"Generate {n} shorter, visually descriptive phrases (3–7 words each) "
+                f"that together cover what someone would search for to find these photos.\n"
+                f"Output ONLY the phrases, one per line, no numbers or explanation."
+            ),
+        )
+        phrases = [
+            line.strip()
+            for line in resp["response"].split("\n")
+            if line.strip() and len(line.strip()) > 3
+        ]
+        return (phrases[:n] if phrases else [query])
+    except Exception:
+        return [query]
+
+
+def search_expanded(query: str, top_k: int = 5) -> list:
+    """Search using multi-prompt query expansion for better recall on complex queries."""
+    conn = _init_db()
+    rows = conn.execute(
+        "SELECT file_path, file_name, embedding FROM embeddings"
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return []
+
+    sub_queries = _expand_query(query)
+    print(f"[search_expanded] Expanded '{query}' → {sub_queries}")
+
+    # Average text embeddings across all sub-queries
+    text_vecs = []
+    for q in sub_queries:
+        tokens = clip.tokenize([q]).to(device)
+        with torch.no_grad():
+            vec = model.encode_text(tokens).cpu().numpy().flatten()
+        norm = np.linalg.norm(vec)
+        text_vecs.append(vec / norm if norm > 0 else vec)
+
+    avg_vec = np.mean(text_vecs, axis=0)
+    avg_vec = avg_vec / np.linalg.norm(avg_vec)
+
+    results = []
+    for file_path, file_name, blob in rows:
+        img_vec = _deserialize(blob)
+        score = float(np.dot(avg_vec, img_vec))
+        results.append((file_path, file_name, score))
+
+    results.sort(key=lambda x: x[2], reverse=True)
+    conn.close()
+    return results[:top_k]
 
 
 if __name__ == "__main__":

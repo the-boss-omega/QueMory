@@ -374,7 +374,7 @@ def _overlaps_existing(start_iso: str | None, end_iso: str | None,
 
 
 def detect_and_save_all(features_list: list[dict],
-                        homes: list[dict] | None = None) -> list[dict]:
+                        homes: list[dict] | None = None) -> dict:
     """Run trip detection only on unassigned images. Mark everything after."""
     from database import (
         get_unassigned_images, get_image_ids_by_paths,
@@ -389,14 +389,14 @@ def detect_and_save_all(features_list: list[dict],
 
     if not unassigned_paths:
         print("[trips] No new images to process.")
-        return []
+        return {"trips": [], "merged": 0, "excluded": 0}
 
     # Step 2: Filter features_list to only unassigned photos
     new_features = [f for f in features_list if f.get("path") in unassigned_paths]
 
     if not new_features:
         print("[trips] No unassigned photos with features found.")
-        return []
+        return {"trips": [], "merged": 0, "excluded": 0}
 
     print(f"[trips] Processing {len(new_features)} new images (skipping {len(features_list) - len(new_features)} already processed)")
 
@@ -483,4 +483,8 @@ def detect_and_save_all(features_list: list[dict],
     if skipped:
         print(f"[trips] {skipped} cluster(s) merged into existing trips")
 
-    return results
+    return {
+        "trips": results,
+        "merged": skipped,
+        "excluded": len(excluded_ids),
+    }

@@ -153,7 +153,7 @@ def extract_where(exif: dict) -> dict:
         except (TypeError, ValueError):
             pass
 
-    if result["latitude"] and result["longitude"]:
+    if result["latitude"] is not None and result["longitude"] is not None:
         try:
             from geopy.geocoders import Nominatim
             geo = Nominatim(user_agent="smart_album_meta")
