@@ -28,6 +28,34 @@ There is also one custom C++ extension in `backend/calc/filter_core.cpp` that sp
 
 ## 2. Core Runtime Flows
 
+### F. Ben Aharon Marenkov Special flow (new)
+
+This is a dedicated LLM-generated visual page for a single trip. It combines analytics data, real trip photos and a vision model to produce a unique, animated HTML page per trip.
+
+1. The user opens a trip detail page in Flutter.
+2. Flutter renders `BenAharonSpecialCard`, which creates a `WebViewController` in `initState`.
+3. The WebView immediately GETs `http://localhost:8000/trips/{trip_id}/ben-aharon`.
+4. `server.py` `api_ben_aharon_page`:
+   - looks up the trip row (gets `name` and `description`),
+   - calls `compute_all_analytics(trip_id)` to get the full analytics payload,
+   - extracts `image_paths` from `analytics["key_photos"]["photos"]` (only `is_key: true` photos),
+   - calls `generate_ben_aharon_html(trip_name, analytics, image_paths, description)`.
+5. `generate_ben_aharon_html` in `summarize.py`:
+   - builds a rich text prompt with trip stats, GPS points, photography DNA vibes, happiest day, face count, trip description and image count,
+   - resizes and base64-encodes up to 5 key photos via `_encode_images()`,
+   - POSTs both prompt and images to Ollama (`gemma4:e4b`) with a 180-second timeout,
+   - strips markdown fences if the model wraps its output,
+   - validates that the response starts with `<!DOCTYPE html>` or `<html>`,
+   - falls back to the static CDN HTML from `analytic_ben_aharon_special()` in `analytics.py` if anything fails.
+6. `server.py` returns the HTML as an `HTMLResponse`.
+7. The WebView renders the page. Once loading is complete, the spinner disappears and the full animated, LLM-generated card is visible.
+
+Key design decisions:
+
+- The endpoint is a separate route so the analytics dashboard loads instantly while the WebView fetches the slow LLM page independently.
+- The fallback ensures the feature is never broken from the user's perspective.
+- The `?force=true` query parameter bypasses the analytics cache in case new photos were added to the trip.
+
 ### A. Manual trip creation flow
 
 1. The user opens the Trips page.
@@ -171,9 +199,32 @@ What happens step by step:
    - `/trips/{id}/analytics`
    - `/trips/{id}/add-photos`
    - `/wrapped/stats`
+   - `/image`
+   - `/trips/{id}/ben-aharon` ← **new**
 
 Important design detail:
 `_get_display_path(...)` converts HEIC/HEIF files to temporary JPEGs for display, but it leaves the original files alone.
+
+#### `/trips/{trip_id}/ben-aharon` endpoint (new)
+
+This endpoint generates and serves the Ben Aharon Marenkov Special page as raw HTML.
+
+Step-by-step:
+
+1. Accepts `trip_id` (path param) and `force` (query param, default false).
+2. Looks up the trip row from SQLite via `list_trips()`. Returns 404 if not found.
+3. Calls `compute_all_analytics(trip_id, force=force)` to get the full analytics payload.
+   - If `force=true`, the analytics cache is bypassed and recomputed.
+4. Extracts `image_paths` — only photos marked `is_key: true` from the `key_photos` analytics section.
+5. Calls `generate_ben_aharon_html(trip_name, analytics, image_paths, description)` from `summarize.py`.
+   - Also passes `trip['description']` (the LLM-generated trip summary) for richer context.
+6. Returns the resulting HTML string as an `HTMLResponse`.
+
+Why the endpoint is its own route and not embedded in `/analytics`:
+The page generation is slow (180-second LLM timeout) and produces raw HTML rather than JSON. Separating it means the analytics dashboard loads instantly while the WebView card fetches this page independently in the background.
+
+Why `force` matters here:
+Key photos and analytics data are cached. If the user adds photos to a trip after the first load, passing `?force=true` ensures the Ben Aharon page reflects the latest data.
 
 Why this file matters for extension work:
 If you want a new frontend feature that needs backend data, this is where the new endpoint usually gets added.
@@ -451,25 +502,167 @@ This is the domain layer that turns "a pile of photos" into "a set of trips."
 ### `backend/summarize.py`
 
 Purpose:
-Generate a human-readable trip summary using Ollama.
+This file has two distinct jobs:
+
+1. Generate a plain-text trip summary with `generate_summary()`.
+2. Generate the Ben Aharon Marenkov Special HTML page with `generate_ben_aharon_html()` (new).
+
+Both jobs call the same local Ollama model (`gemma4:e4b`) at `http://localhost:11434/api/generate`.
+
+#### Shared setup
+
+```python
+import base64
+import io
+import time
+import urllib.request
+import urllib.parse
+import json
+```
+
+`base64` and `io` are needed for the vision-model image encoding path.
+`urllib.request` is used for all Ollama and Nominatim HTTP calls — no third-party HTTP library is required.
+
+```python
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "gemma4:e4b"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+```
+
+All LLM and geocoding endpoints are defined as module-level constants, making them easy to change.
+
+```python
+_geocode_cache: dict[tuple[float, float], dict] = {}
+```
+
+In-process cache for reverse-geocode results. The key is `(rounded_lat, rounded_lon)` to a ~1 km grid, preventing duplicate Nominatim requests for nearly identical coordinates.
+
+#### `_reverse_geocode(lat, lon)`
 
 Step-by-step:
 
-1. Load the trip row, locations and photos from SQLite.
-2. Reverse geocode the stop coordinates with Nominatim.
-3. Build a prompt containing:
-   - trip name,
-   - date range,
-   - duration,
-   - locations,
-   - distances between stops,
-   - time-of-day distribution,
-   - user notes.
-4. Send the prompt to a local Ollama model.
-5. Save the resulting summary back into the `trips` table.
+1. Round both coordinates to 2 decimal places and check the cache.
+2. Build a Nominatim request with `format=json` and `zoom=10` (city-level).
+3. Parse the response for `city`, `town`, `village`, `county`, or `Unknown`.
+4. Sleep 1 second to respect the Nominatim rate limit (1 req/sec).
+5. Cache and return the result.
 
-Important design note:
-This file does not do trip analysis itself. It just turns already-derived data into text.
+This function is used only by `_build_prompt()` for the plain-text summary path.
+
+#### `_build_prompt(trip, locations, photos, user_notes)` — plain text summary
+
+Assembles everything the LLM needs to write a warm travel summary.
+
+Block-by-block:
+
+1. **Header block** — trip name, date range, total photos, key-photo count.
+2. **Duration block** — computed from ISO date strings; skipped if dates are unparseable.
+3. **Locations block** — reverse-geocodes each stop and lists arrival/departure times and photo counts.
+4. **Distances block** — only appears when there are 2+ stops; computes haversine km between consecutive stops.
+5. **Time-of-day block** — counts photos in four buckets (morning 6–12, afternoon 12–17, evening 17–21, night otherwise).
+6. **User notes block** — appended verbatim if the user provided notes.
+7. **Instruction line** — tells the model to write 3–4 warm sentences mentioning specific places, no bullet points.
+
+#### `generate_summary(trip_id, user_notes)` — plain text summary
+
+Step-by-step:
+
+1. Find the trip row in SQLite.
+2. Load stop locations and all trip photos.
+3. Call `_build_prompt(...)` to produce the text prompt.
+4. POST to Ollama with `stream: false` and a 120-second timeout.
+5. Extract `response` from the JSON reply.
+6. Save the result to the `trips.description` column via `update_trip_description()`.
+7. Return the summary string (or `None` on failure).
+
+This is called automatically on `/trips` POST (trip creation).
+
+---
+
+#### Ben Aharon Marenkov Special (new)
+
+These three functions implement the LLM-generated visual HTML page feature.
+
+#### `_build_ben_aharon_prompt(trip_name, analytics, image_paths, description)` (new)
+
+Builds the text portion of the vision-model request. Unlike `_build_prompt()`, this one reads pre-computed analytics payloads instead of raw DB rows, so it does not need to touch the database or do geocoding.
+
+Block-by-block:
+
+1. **Trip name** — always first line.
+2. **Description block** — the LLM-generated trip summary (if it exists), added immediately after the name. This gives the model the full narrative context before it sees any stats.
+3. **Trip stats block** — reads `analytics["trip_stats"]` for duration days, date range, photo count and distance in km.
+4. **Locations block** — reads `analytics["map_of_photos"]["points"]` and samples up to 5 GPS coordinates. The model uses these to infer the region and shape the color palette.
+5. **Photography DNA block** — reads `analytics["photography_dna"]["vibes"]` and sends the top 3 CLIP-derived vibe labels (e.g. `"Golden hour, Architecture, Forest"`). This is the richest creative hint for gradient colors and the tagline.
+6. **Emotional tone block** — reads `analytics["emotional_timeline"]["happiest_day"]`. Influences the tagline tone.
+7. **Inner circle block** — reads `analytics["inner_circle"]["faces"]` and tells the model whether this was a solo or group trip.
+8. **Image count hint** — if `image_paths` is non-empty, tells the model in text how many photos are attached. The actual pixels arrive separately in the Ollama `images` field, not inline in this text block.
+9. **Instruction block** — the full creative brief:
+   - dark cinematic gradient,
+   - large trip name using only system/inline fonts (NO CDN links),
+   - 2–3 CSS animations (orbs, shimmer, fade-in),
+   - one poetic tagline derived from the data,
+   - all CSS in a `<style>` block,
+   - return ONLY raw `<!DOCTYPE html>` — no markdown, no explanation.
+
+#### `_encode_images(paths, max_images=5, max_px=512)` (new)
+
+Converts real photo files into base64 strings suitable for the Ollama `images` field.
+
+Step-by-step for each path:
+
+1. Open with Pillow and convert to RGB (handles HEIC alpha channels and palette modes).
+2. `img.thumbnail((512, 512))` — shrinks the longest side to 512px while preserving aspect ratio. In-place, non-destructive to the file.
+3. Write to an in-memory `io.BytesIO` buffer as JPEG at quality 75.
+4. `base64.b64encode(buf.getvalue()).decode("utf-8")` — produces a plain ASCII string.
+5. Append to the result list.
+
+Why max 5 images:
+Each 512px JPEG is roughly 50–200 KB of base64 data. At 5 images the payload is ~1–3 MB — within Ollama's context window and well inside the 180-second timeout. The model's creative output (gradient, tagline) does not meaningfully improve past 5 representative photos. The limit is a default parameter and can be overridden.
+
+Why resize:
+Vision models encode images into hundreds of tokens each. Sending full-resolution photos (3–12 MB) would exhaust the context window and cause timeouts.
+
+#### `generate_ben_aharon_html(trip_name, analytics, image_paths, description)` (new)
+
+The orchestrator. Calls the prompt builder and image encoder, sends both to Ollama, and handles the response.
+
+Step-by-step:
+
+1. Call `_build_ben_aharon_prompt(...)` to get the text prompt string.
+2. Call `_encode_images(image_paths)` to get the base64 image list.
+3. Assemble the Ollama payload:
+   ```json
+   { "model": "gemma4:e4b", "prompt": "...", "images": [...], "stream": false }
+   ```
+   The `images` list is what activates the vision pathway — the model receives text + pixels simultaneously.
+4. POST to Ollama with a 180-second timeout.
+5. Extract `data["response"]` and strip leading/trailing whitespace.
+
+**Markdown fence stripping:**
+```python
+if html.startswith("```"):
+    html = html.split("```", 2)[1]
+    if html.startswith("html"):
+        html = html[4:]
+    html = html.rsplit("```", 1)[0].strip()
+```
+Models often wrap code blocks in ` ```html ... ``` `. This block surgically removes those fences so only raw HTML remains.
+
+**Sanity check:**
+```python
+if not html.lower().startswith("<!doctype") and not html.startswith("<html"):
+    raise ValueError(...)
+```
+If what came back is not HTML (e.g. the model apologized or explained instead of generating), this intentionally raises so the except block fires immediately.
+
+**Fallback:**
+```python
+except Exception as e:
+    from analytics import analytic_ben_aharon_special
+    html = analytic_ben_aharon_special(trip_name)["html"]
+```
+If anything fails — timeout, network error, bad output — the function silently falls back to the hardcoded CDN HTML template in `analytics.py`. The Flutter app never sees an error; it just gets the static fallback instead of the LLM-generated page.
 
 ### `backend/analytics.py`
 
@@ -836,7 +1029,62 @@ Each of the following widgets corresponds to one analytic function in `analytics
 16. `PhotographyDNACard` — vibe distribution from CLIP prompts as a pie/bar chart.
 17. `NightOwlReportCard` — late-night shooting stats.
 18. `KeyPhotosCard` — scrollable gallery of key photos plus all-photos toggle.
-19. `BenAharonSpecialCard` — hero aesthetic card with gradient overlay and large photo.
+19. `BenAharonSpecialCard` — **new** — a `StatefulWidget` that embeds a WebView loading the LLM-generated HTML page live from the backend.
+
+#### `BenAharonSpecialCard` (new, detailed)
+
+This is the only card that is **not** a pure rendering widget. It owns live network I/O via a `WebViewController`.
+
+```dart
+class BenAharonSpecialCard extends StatefulWidget {
+  final Map<String, dynamic> data;
+  final int tripId;
+  ...
+}
+```
+
+It accepts both the analytics payload `data` (for potential future use) and `tripId` (the actual trip ID integer needed to build the URL).
+
+**`initState()` block:**
+```dart
+_controller = WebViewController()
+  ..setJavaScriptMode(JavaScriptMode.unrestricted)
+  ..setNavigationDelegate(
+    NavigationDelegate(
+      onPageFinished: (_) => setState(() => _loading = false),
+    ),
+  )
+  ..loadRequest(
+    Uri.parse('http://localhost:8000/trips/\${widget.tripId}/ben-aharon'),
+  );
+```
+
+1. A `WebViewController` is created once in `initState` — it lives for the lifetime of the widget.
+2. JavaScript is enabled (`unrestricted`) so CSS animations in the LLM-generated HTML work correctly.
+3. `onPageFinished` flips `_loading` to false, which removes the loading spinner from the stack.
+4. `loadRequest` immediately fires the HTTP GET to the backend. The backend call triggers the full analytics + LLM pipeline for this trip.
+
+**`build()` block:**
+```dart
+SizedBox(
+  height: 300,
+  child: ClipRRect(
+    borderRadius: BorderRadius.circular(12),
+    child: Stack(
+      children: [
+        WebViewWidget(controller: _controller),
+        if (_loading)
+          const Center(child: CircularProgressIndicator(color: Colors.white54)),
+      ],
+    ),
+  ),
+)
+```
+
+1. The card is fixed at 300px tall inside the standard `AnalyticCard` frame.
+2. `ClipRRect` clips the WebView to match the card's rounded corners.
+3. A `Stack` overlays the spinner on top of the WebView until the page finishes loading.
+4. Once `_loading` becomes false the spinner disappears and the full LLM-generated page is visible — dark gradient, trip name, CSS animations and all.
 
 #### `_SparklinePainter`
 
