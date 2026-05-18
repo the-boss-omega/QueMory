@@ -1,0 +1,7 @@
+2026-05-17 09:11:10.645 | INFO     | root | logging_setup.py:120 | ========================================================================
+2026-05-17 09:11:10.645 | INFO     | root | logging_setup.py:121 | QueMory logging initialised
+2026-05-17 09:11:10.646 | INFO     | root | logging_setup.py:122 | Log file: D:\Proj\QueMory2\logging\run_2026-05-17_09-11-10.log
+2026-05-17 09:11:10.646 | INFO     | root | logging_setup.py:123 | Python:   3.13.13
+2026-05-17 09:11:10.646 | INFO     | root | logging_setup.py:124 | PID:      17008
+2026-05-17 09:11:10.646 | INFO     | root | logging_setup.py:125 | CWD:      D:\Proj\QueMory2\backend
+2026-05-17 09:11:10.646 | INFO     | root | logging_setup.py:126 | ========================================================================

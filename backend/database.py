@@ -1,6 +1,9 @@
+import logging
 import sqlite3
 import os
 import face
+
+log = logging.getLogger("quemory.database")
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "database")
 DB_PATH = os.path.join(DB_DIR, "quemory.db")
@@ -8,6 +11,7 @@ DB_PATH = os.path.join(DB_DIR, "quemory.db")
 
 def create_database():
     """Create the database folder and quemory.db with all tables."""
+    log.debug("create_database(): ensuring schema at %s", DB_PATH)
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -132,6 +136,7 @@ def mark_images_assigned(image_ids: list, trip_id: int):
     """Mark images as belonging to a trip."""
     if not image_ids:
         return
+    log.debug("mark_images_assigned: %d image(s) -> trip_id=%d", len(image_ids), trip_id)
     conn = sqlite3.connect(DB_PATH)
     placeholders = ','.join('?' * len(image_ids))
     conn.execute(f"""
@@ -147,6 +152,7 @@ def mark_images_excluded(image_ids: list):
     """Mark images as checked but not part of any trip (daily life)."""
     if not image_ids:
         return
+    log.debug("mark_images_excluded: %d image(s)", len(image_ids))
     conn = sqlite3.connect(DB_PATH)
     placeholders = ','.join('?' * len(image_ids))
     conn.execute(f"""
@@ -204,6 +210,10 @@ def create_trip(name: str, start_date: str = None, end_date: str = None,
                 cover_photo_path: str = None, description: str = None,
                 total_photos: int = 0, total_key_photos: int = 0) -> int:
     """Create a new trip and return its id."""
+    log.info(
+        "create_trip(name=%r, start=%s, end=%s, total_photos=%d, total_key=%d)",
+        name, start_date, end_date, total_photos, total_key_photos,
+    )
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -300,6 +310,7 @@ def list_trips() -> list[dict]:
            FROM trips ORDER BY start_date DESC""",
     ).fetchall()
     conn.close()
+    log.debug("list_trips returned %d trip(s)", len(rows))
     return [dict(r) for r in rows]
 
 
@@ -317,6 +328,10 @@ def get_home_locations() -> list[dict]:
 def add_home_location(latitude: float, longitude: float,
                       radius_km: float = 5.0, label: str = None) -> int:
     """Add a home location. Returns the row id."""
+    log.info(
+        "add_home_location lat=%.4f lon=%.4f radius_km=%.1f label=%s",
+        latitude, longitude, radius_km, label,
+    )
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
@@ -331,6 +346,7 @@ def add_home_location(latitude: float, longitude: float,
 
 def update_trip_description(trip_id: int, description: str) -> None:
     """Update the description column for a trip."""
+    log.debug("update_trip_description(trip_id=%d, chars=%d)", trip_id, len(description or ""))
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "UPDATE trips SET description = ? WHERE id = ?",
@@ -352,11 +368,14 @@ def get_trip_image_paths(trip_id: int) -> list[str]:
 
 def update_frequent_face(trip_id: int) -> None:
     """Detect and store the most frequently appearing face in a trip."""
+    log.info("update_frequent_face(trip_id=%d)", trip_id)
     image_paths = get_trip_image_paths(trip_id)
     if not image_paths:
+        log.debug("update_frequent_face: no images for trip %d", trip_id)
         return
     results = face.find_top_face(image_paths)
     if not results:
+        log.info("update_frequent_face: no top face found for trip %d", trip_id)
         return
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -374,12 +393,17 @@ def update_frequent_face(trip_id: int) -> None:
     )
     conn.commit()
     conn.close()
+    log.info(
+        "update_frequent_face: trip_id=%d face_in=%s count=%s",
+        trip_id, results.get("image_path"), results.get("count"),
+    )
 
 
 def add_photos_to_trip(trip_id: int, photos: list[dict]) -> int:
     """Append new photos to an existing trip and refresh cover photo.
     Returns number of newly inserted photos.
     """
+    log.info("add_photos_to_trip(trip_id=%d, count=%d)", trip_id, len(photos))
     if not photos:
         return 0
     conn = sqlite3.connect(DB_PATH)
@@ -400,8 +424,9 @@ def add_photos_to_trip(trip_id: int, photos: list[dict]) -> int:
             )
             inserted += cursor.rowcount
         except Exception:
-            pass
+            log.exception("Failed to insert photo into trip_id=%d: %s", trip_id, p.get("path"))
     conn.commit()
+    log.info("add_photos_to_trip: %d new rows inserted (trip_id=%d)", inserted, trip_id)
 
     # Update total_photos count
     conn.execute(
@@ -442,6 +467,9 @@ def update_cover_photo(trip_id: int) -> str | None:
             (path, trip_id),
         )
         conn.commit()
+        log.info("update_cover_photo: trip_id=%d -> %s", trip_id, path)
+    else:
+        log.debug("update_cover_photo: no candidates for trip_id=%d", trip_id)
     conn.close()
     return path
 

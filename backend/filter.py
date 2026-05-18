@@ -1,3 +1,4 @@
+import logging
 import os
 import struct
 import sqlite3
@@ -26,14 +27,18 @@ from clip_embed import (
     _serialize, _deserialize, IMAGES_FOLDER,
 )
 
+log = logging.getLogger("quemory.filter")
+
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'calc'))
     import filter_core as _cpp
     _USE_CPP = True
+    log.info("C++ acceleration enabled (filter_core)")
     print("[filter] C++ acceleration enabled")
 except ImportError:
     _USE_CPP = False
+    log.warning("C++ acceleration unavailable, falling back to Python")
     print("[filter] C++ not available, using Python fallback")
 
 VARIANCE_THRESHOLD = 100.0
@@ -466,12 +471,14 @@ def _run_phases_2_to_4(features_list, gap_seconds):
 
 def curate(folder: str = None, max_images: int = TARGET_IMAGES) -> dict:
     folder = folder or IMAGES_FOLDER
+    log.info("curate(folder=%s, max_images=%d)", folder, max_images)
     extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
     images = [
         p for p in Path(folder).iterdir()
         if p.suffix.lower() in extensions and p.is_file()
     ]
 
+    log.info("curate: scanned %d image file(s) in %s", len(images), folder)
     print(f"\n[curate] Found {len(images)} images in {folder}")
 
     conn = init_embed_db()
@@ -495,9 +502,11 @@ def curate(folder: str = None, max_images: int = TARGET_IMAGES) -> dict:
         else:
             surviving.append(abs_path)
 
+    log.info("curate: phase0 done — %d rejected, %d surviving", len(rejected_blank), len(surviving))
     print(f"  {len(rejected_blank)} rejected, {len(surviving)} surviving")
 
     if not surviving:
+        log.warning("curate: no images survived phase 0")
         return {
             "keep": [],
             "rejected_blank": rejected_blank,

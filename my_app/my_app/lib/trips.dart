@@ -830,6 +830,7 @@ class _TripDetailPageState extends State<_TripDetailPage> {
         pageBuilder: (_, _, _) => _TripWrappedStory(
           tripName: widget.tripData['name'] as String,
           analytics: _analytics!,
+          tripId: widget.tripData['id'] as int,
         ),
         transitionsBuilder: (_, anim, _, child) =>
             FadeTransition(opacity: anim, child: child),
@@ -1822,8 +1823,13 @@ class _StoryPhotoCarouselState extends State<_StoryPhotoCarousel> {
 class _TripWrappedStory extends StatefulWidget {
   final String tripName;
   final Map<String, dynamic> analytics;
+  final int tripId;
 
-  const _TripWrappedStory({required this.tripName, required this.analytics});
+  const _TripWrappedStory({
+    required this.tripName,
+    required this.analytics,
+    required this.tripId,
+  });
 
   @override
   State<_TripWrappedStory> createState() => _TripWrappedStoryState();
@@ -1966,7 +1972,10 @@ class _TripWrappedStoryState extends State<_TripWrappedStory> {
       ),
       _SlideInfo(
         label: 'Special',
-        content: BenAharonSpecialCard(data: _sec('ben_aharon_special')),
+        content: BenAharonSpecialCard(
+          data: _sec('ben_aharon_special'),
+          tripId: widget.tripId,
+        ),
       ),
     ];
   }

@@ -1,5 +1,16 @@
 import os
+import logging
 import tempfile
+
+# Logging MUST be configured before any other QueMory module is imported so
+# that those modules' module-level log calls (and any work they do at import
+# time, e.g. loading CLIP) are captured by the run's log file.
+from logging_setup import setup_logging, LOG_FILE_PATH
+
+setup_logging()
+log = logging.getLogger("quemory.server")
+log.info("Importing server dependencies")
+
 from fastapi import FastAPI, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -21,14 +32,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    log.info("FastAPI startup hook fired")
+    log.info("Active log file: %s", LOG_FILE_PATH)
+
+
+@app.on_event("shutdown")
+def _on_shutdown() -> None:
+    log.info("FastAPI shutdown hook fired — flushing log handlers")
+    logging.shutdown()
+
+
+log.info("Ensuring SQLite schema exists")
 create_database()
 
-# Auto-index any images that don't have embeddings yet
+# Auto-index any images that don't have embeddings yet.
+log.info("Auto-indexing image embeddings on startup")
 try:
     from clip_embed import save_all_embeddings
     save_all_embeddings()
-except Exception as _e:
-    print(f"[server] Embedding index skipped: {_e}")
+except Exception:
+    log.exception("Startup embedding index failed — continuing without it")
 
 _heic_cache: dict[str, str] = {}
 
@@ -44,8 +71,13 @@ def _get_display_path(file_path: str, file_name: str) -> str:
         f"quemory_{os.path.splitext(file_name)[0]}.jpg",
     )
     if not os.path.exists(tmp_path):
-        img = Image.open(file_path).convert("RGB")
-        img.save(tmp_path, "JPEG", quality=85)
+        log.debug("Transcoding HEIC for display: %s -> %s", file_name, tmp_path)
+        try:
+            img = Image.open(file_path).convert("RGB")
+            img.save(tmp_path, "JPEG", quality=85)
+        except Exception:
+            log.exception("Failed to transcode HEIC file: %s", file_path)
+            return file_path
     _heic_cache[file_path] = tmp_path
     return tmp_path
 
@@ -53,7 +85,13 @@ def _get_display_path(file_path: str, file_name: str) -> str:
 @app.get("/search")
 def api_search(q: str = Query(...), top_k: int = Query(5), expand: bool = Query(True)):
     """Semantic image search. Use expand=true (default) for multi-prompt query expansion."""
-    results = search_expanded(q, top_k) if expand else search(q, top_k)
+    log.info("GET /search q=%r top_k=%d expand=%s", q, top_k, expand)
+    try:
+        results = search_expanded(q, top_k) if expand else search(q, top_k)
+    except Exception:
+        log.exception("Search failed for query %r", q)
+        raise
+    log.debug("Search returned %d hits", len(results))
     return [
         {
             "path": _get_display_path(path, name),
@@ -67,13 +105,26 @@ def api_search(q: str = Query(...), top_k: int = Query(5), expand: bool = Query(
 
 @app.post("/embed")
 def api_embed():
-    save_all_embeddings()
+    log.info("POST /embed — full re-index requested")
+    try:
+        save_all_embeddings()
+    except Exception:
+        log.exception("Embedding index failed")
+        raise
     return {"status": "ok"}
 
 
 @app.get("/curate")
 def api_curate(folder: str = Query(None)):
+    log.info("GET /curate folder=%s", folder)
     result = curate(folder)
+    log.info(
+        "Curation result: keep=%d removals=%d blank=%d quality=%d",
+        len(result.get("keep", [])),
+        len(result.get("suggested_removals", [])),
+        len(result.get("rejected_blank", [])),
+        len(result.get("rejected_quality", [])),
+    )
     for item in result["keep"]:
         item["path"] = _get_display_path(item["path"], item["name"])
     for item in result["suggested_removals"]:
@@ -93,16 +144,18 @@ class CreateTripRequest(BaseModel):
 
 @app.post("/trips")
 def api_create_trip(req: CreateTripRequest):
+    log.info("POST /trips name=%r folder=%s", req.name, req.folder)
     result = curate(req.folder)
     trip_id = create_trip(req.name, total_photos=len(result["keep"]))
+    log.info("Created trip id=%d with %d kept photos", trip_id, len(result["keep"]))
     save_trip_photos(trip_id, result["keep"])
     update_cover_photo(trip_id)
     description = ""
     try:
         from summarize import generate_summary
         description = generate_summary(trip_id, user_notes=req.notes) or ""
-    except Exception as e:
-        print(f"[server] Summary generation failed: {e}")
+    except Exception:
+        log.exception("Summary generation failed for trip_id=%d", trip_id)
     display_photos = [
         {"path": _get_display_path(item["path"], item["name"]), "name": item["name"]}
         for item in result["keep"]
@@ -141,6 +194,7 @@ def api_trip_locations(trip_id: int):
 @app.post("/detect-trips")
 def api_detect_trips(folder: str = Query(None)):
     """Run the full curation pipeline then detect and save trips."""
+    log.info("POST /detect-trips folder=%s", folder)
     from filter import (
         phase0_reject, extract_all_features, IMAGES_FOLDER,
     )
@@ -190,14 +244,20 @@ def api_detect_trips(folder: str = Query(None)):
         if features.get("timestamp") is not None:
             features_list.append(features)
 
+    log.info("Built feature list of %d photos for trip detection", len(features_list))
     detection = detect_and_save_all(features_list)
     from database import get_unassigned_images
+    remaining = len(get_unassigned_images())
+    log.info(
+        "Detection done: new=%d merged=%d excluded=%d unassigned_remaining=%d",
+        len(detection["trips"]), detection["merged"], detection["excluded"], remaining,
+    )
     return {
         "new_trips": len(detection["trips"]),
         "trips": detection["trips"],
         "merged": detection["merged"],
         "excluded": detection["excluded"],
-        "unassigned_remaining": len(get_unassigned_images()),
+        "unassigned_remaining": remaining,
     }
 
 
@@ -210,13 +270,20 @@ class HomeLocationRequest(BaseModel):
 
 @app.post("/home-locations")
 def api_add_home(req: HomeLocationRequest):
+    log.info(
+        "POST /home-locations lat=%.4f lon=%.4f radius_km=%.1f label=%s",
+        req.latitude, req.longitude, req.radius_km, req.label,
+    )
     row_id = add_home_location(req.latitude, req.longitude, req.radius_km, req.label)
+    log.debug("Home location row_id=%d", row_id)
     return {"id": row_id}
 
 
 @app.get("/home-locations")
 def api_list_homes():
-    return get_home_locations()
+    homes = get_home_locations()
+    log.debug("GET /home-locations -> %d rows", len(homes))
+    return homes
 
 
 # ─── Analytics ────────────────────────────────────────────────────────────────
@@ -224,22 +291,28 @@ def api_list_homes():
 @app.get("/trips/{trip_id}/analytics")
 def api_trip_analytics(trip_id: int, force: bool = Query(False)):
     """Return (cached) analytics for a trip. Use ?force=true to recompute."""
+    log.info("GET /trips/%d/analytics force=%s", trip_id, force)
     from analytics import compute_all_analytics
     try:
         data = compute_all_analytics(trip_id, force=force)
+        log.debug("Analytics keys: %s", list(data.keys()) if isinstance(data, dict) else type(data).__name__)
         return JSONResponse(content=data)
     except Exception as e:
+        log.exception("Analytics computation failed for trip_id=%d", trip_id)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/trips/{trip_id}/add-photos")
 def api_add_photos(trip_id: int, req: CreateTripRequest, background_tasks: BackgroundTasks):
     """Add photos from a folder to an existing trip."""
+    log.info("POST /trips/%d/add-photos folder=%s", trip_id, req.folder)
     from analytics import invalidate_cache
     if not req.folder:
+        log.warning("Add-photos rejected: missing folder for trip_id=%d", trip_id)
         return JSONResponse(status_code=400, content={"error": "folder required"})
     result = curate(req.folder)
     inserted = add_photos_to_trip(trip_id, result["keep"])
+    log.info("Inserted %d new photos into trip_id=%d", inserted, trip_id)
     update_cover_photo(trip_id)
     # Invalidate analytics cache so next fetch recomputes
     background_tasks.add_task(invalidate_cache, trip_id)
@@ -263,6 +336,7 @@ def api_get_image(path: str = Query(...)):
         Path(tempfile.gettempdir()).resolve(),
     ]
     if not any(str(resolved).startswith(str(root)) for root in allowed_roots):
+        log.warning("Rejected /image request outside allowed roots: %s", resolved)
         return JSONResponse(status_code=403, content={"error": "forbidden"})
     display = _get_display_path(path, os.path.basename(path))
     return FileResponse(display)
@@ -270,21 +344,29 @@ def api_get_image(path: str = Query(...)):
 @app.get("/trips/{trip_id}/ben-aharon")
 def api_ben_aharon_page(trip_id: int, force: bool = Query(False)):
     """Serve the Ben Aharon Marenkov Special as a standalone LLM-generated HTML page."""
+    log.info("GET /trips/%d/ben-aharon force=%s", trip_id, force)
     from analytics import compute_all_analytics
     from summarize import generate_ben_aharon_html
 
     all_trips = list_trips()
     trip = next((t for t in all_trips if t["id"] == trip_id), None)
     if trip is None:
+        log.warning("Ben-Aharon requested for unknown trip_id=%d", trip_id)
         return JSONResponse(status_code=404, content={"error": "trip not found"})
 
     try:
         analytics = compute_all_analytics(trip_id, force=force)
     except Exception as e:
+        log.exception("Ben-Aharon: analytics compute failed for trip_id=%d", trip_id)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     key_photos = analytics.get("key_photos", {}).get("photos", [])
     image_paths = [p["path"] for p in key_photos if p.get("is_key")]
+    log.debug("Ben-Aharon: passing %d key photos to LLM", len(image_paths))
 
-    html = generate_ben_aharon_html(trip["name"], analytics, image_paths, trip.get("description"))
+    try:
+        html = generate_ben_aharon_html(trip["name"], analytics, image_paths, trip.get("description"))
+    except Exception:
+        log.exception("Ben-Aharon HTML generation failed for trip_id=%d", trip_id)
+        raise
     return HTMLResponse(content=html)

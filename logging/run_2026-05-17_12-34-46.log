@@ -1,0 +1,10 @@
+2026-05-17 12:34:46.840 | INFO     | root | logging_setup.py:120 | ========================================================================
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:121 | QueMory logging initialised
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:122 | Log file: D:\Proj\QueMory2\logging\run_2026-05-17_12-34-46.log
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:123 | Python:   3.13.13
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:124 | PID:      34168
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:125 | CWD:      D:\Proj\QueMory2\backend
+2026-05-17 12:34:46.841 | INFO     | root | logging_setup.py:126 | ========================================================================
+2026-05-17 12:34:49.910 | INFO     | quemory.clip_embed | clip_embed.py:25 | Loading CLIP ViT-B/32 on device=cpu
+2026-05-17 12:34:51.498 | INFO     | quemory.clip_embed | clip_embed.py:27 | CLIP model loaded
+2026-05-17 12:34:51.500 | INFO     | quemory.filter | filter.py:37 | C++ acceleration enabled (filter_core)

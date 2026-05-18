@@ -7,6 +7,7 @@ photos are added to a trip.
 """
 
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -14,6 +15,8 @@ from collections import defaultdict
 from datetime import datetime
 
 import numpy as np
+
+log = logging.getLogger("quemory.analytics")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database", "quemory.db")
 EMBED_DB_PATH = os.path.join(os.path.dirname(__file__), "database", "embeddings.db")
@@ -83,6 +86,7 @@ def _clip_text_vector(prompt: str):
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec
     except Exception:
+        log.exception("_clip_text_vector failed for prompt=%r", prompt)
         return None
 
 
@@ -828,7 +832,9 @@ def analytic_ben_aharon_special(trip_name: str) -> dict:
   </div>
 </body>
 </html>"""
-    return {{"type": "ben_aharon_special", "html": html, "trip_name": trip_name}}
+    css = ""
+    javascript = ""
+    return {{"type": "ben_aharon_special", "html": html, "css": css, "javascript": javascript, "trip_name": trip_name}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -874,8 +880,9 @@ def invalidate_cache(trip_id: int) -> None:
         conn.execute("DELETE FROM trip_analytics WHERE trip_id = ?", (trip_id,))
         conn.commit()
         conn.close()
+        log.info("Invalidated analytics cache for trip_id=%d", trip_id)
     except Exception:
-        pass
+        log.exception("Failed to invalidate analytics cache for trip_id=%d", trip_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -884,14 +891,20 @@ def invalidate_cache(trip_id: int) -> None:
 
 def compute_all_analytics(trip_id: int, force: bool = False) -> dict:
     """Return analytics dict for a trip (from cache or freshly computed)."""
+    log.info("compute_all_analytics(trip_id=%d, force=%s)", trip_id, force)
     if not force:
         cached = get_cached_analytics(trip_id)
         if cached:
+            log.debug("Returning cached analytics for trip_id=%d", trip_id)
             return cached
 
     photos = _load_trip_photos(trip_id)
     file_paths = [p["file_path"] for p in photos]
     embeddings = _load_embeddings(file_paths)
+    log.debug(
+        "compute_all_analytics: trip_id=%d photos=%d embeddings=%d",
+        trip_id, len(photos), len(embeddings),
+    )
 
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT name FROM trips WHERE id = ?", (trip_id,)).fetchone()
@@ -923,6 +936,7 @@ def compute_all_analytics(trip_id: int, force: bool = False) -> dict:
     }
 
     cache_analytics(trip_id, result)
+    log.info("compute_all_analytics done for trip_id=%d (%d analytics)", trip_id, len(result))
     return result
 
 

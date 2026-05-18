@@ -15,9 +15,12 @@ from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from datetime import datetime
 import hashlib
+import logging
 import os
 import struct
 import json
+
+log = logging.getLogger("quemory.metadata")
 
 PHOTOS_FOLDER = "D:/Proj/QueMory2/assets/images1"
 
@@ -28,9 +31,14 @@ PHOTOS_FOLDER = "D:/Proj/QueMory2/assets/images1"
 
 def get_exif(image_path: str) -> dict:
     """Extract all EXIF tags as a readable dictionary."""
-    img = Image.open(image_path)
-    raw = img._getexif()
+    try:
+        img = Image.open(image_path)
+        raw = img._getexif()
+    except Exception:
+        log.exception("get_exif: failed to read %s", image_path)
+        return {}
     if not raw:
+        log.debug("get_exif: no EXIF data in %s", image_path)
         return {}
     exif = {}
     for tag_id, value in raw.items():

@@ -5,6 +5,7 @@ call Ollama (Gemma 4) to generate a short personal summary.
 
 import base64
 import io
+import logging
 import time
 import urllib.request
 import urllib.parse
@@ -17,6 +18,8 @@ from database import (
     update_trip_description,
 )
 
+log = logging.getLogger("quemory.summarize")
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma4:e4b"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
@@ -28,12 +31,14 @@ def _reverse_geocode(lat: float, lon: float) -> dict:
     """Resolve lat/lon to city + country via Nominatim. Cached by ~1 km grid."""
     key = (round(lat, 2), round(lon, 2))
     if key in _geocode_cache:
+        log.debug("geocode cache hit for %s", key)
         return _geocode_cache[key]
 
     params = urllib.parse.urlencode({
         "lat": lat, "lon": lon, "format": "json", "zoom": 10,
     })
     url = f"{NOMINATIM_URL}?{params}"
+    log.info("Nominatim reverse geocode lat=%.4f lon=%.4f", lat, lon)
     req = urllib.request.Request(url, headers={"User-Agent": "QueMory/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -44,6 +49,7 @@ def _reverse_geocode(lat: float, lon: float) -> dict:
         country = addr.get("country", "Unknown")
         result = {"city": city, "country": country}
     except Exception:
+        log.exception("Nominatim geocoding failed for lat=%.4f lon=%.4f", lat, lon)
         result = {"city": "Unknown", "country": "Unknown"}
 
     _geocode_cache[key] = result
@@ -137,6 +143,7 @@ def _build_prompt(trip: dict, locations: list[dict], photos: list[dict],
 
 def generate_summary(trip_id: int, user_notes: str | None = None) -> str | None:
     """Build prompt from DB data, call Ollama, save result. Returns the summary."""
+    log.info("generate_summary(trip_id=%d, has_user_notes=%s)", trip_id, bool(user_notes))
     # Find trip metadata
     all_trips = list_trips()
     trip = None
@@ -145,6 +152,7 @@ def generate_summary(trip_id: int, user_notes: str | None = None) -> str | None:
             trip = t
             break
     if not trip:
+        log.warning("generate_summary: trip %d not found", trip_id)
         print(f"[summarize] Trip {trip_id} not found")
         return None
 
@@ -152,6 +160,10 @@ def generate_summary(trip_id: int, user_notes: str | None = None) -> str | None:
     photos = get_trip_photos(trip_id)
     prompt = _build_prompt(trip, locations, photos, user_notes)
 
+    log.info(
+        "Calling Ollama (%s) for trip %r prompt_len=%d",
+        OLLAMA_MODEL, trip["name"], len(prompt),
+    )
     print(f"[summarize] Generating summary for trip '{trip['name']}'...")
 
     payload = json.dumps({
@@ -170,12 +182,16 @@ def generate_summary(trip_id: int, user_notes: str | None = None) -> str | None:
             data = json.loads(resp.read().decode())
         summary = data.get("response", "").strip()
     except Exception as e:
+        log.exception("Ollama summary call failed for trip_id=%d", trip_id)
         print(f"[summarize] Ollama call failed: {e}")
         return None
 
     if summary:
         update_trip_description(trip_id, summary)
+        log.info("Saved summary for trip_id=%d (%d chars)", trip_id, len(summary))
         print(f"[summarize] Saved summary ({len(summary)} chars)")
+    else:
+        log.warning("Ollama returned empty summary for trip_id=%d", trip_id)
 
     return summary
 
@@ -263,6 +279,7 @@ def _encode_images(paths: list[str], max_images: int = 5, max_px: int = 512) -> 
             img.save(buf, format="JPEG", quality=75)
             encoded.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
         except Exception as e:
+            log.exception("ben_aharon: failed to encode image %s", path)
             print(f"[ben_aharon] Could not encode image {path}: {e}")
     return encoded
 
@@ -277,6 +294,10 @@ def generate_ben_aharon_html(
     prompt = _build_ben_aharon_prompt(trip_name, analytics, image_paths, description)
     images = _encode_images(image_paths)
 
+    log.info(
+        "generate_ben_aharon_html: trip=%r images=%d prompt_len=%d",
+        trip_name, len(images), len(prompt),
+    )
     print(f"[ben_aharon] Generating HTML for '{trip_name}' with {len(images)} image(s)...")
 
     payload = json.dumps({
@@ -303,7 +324,9 @@ def generate_ben_aharon_html(
             html = html.rsplit("```", 1)[0].strip()
         if not html.lower().startswith("<!doctype") and not html.startswith("<html"):
             raise ValueError(f"LLM response is not valid HTML: {html[:80]}")
+        log.info("ben_aharon: received %d chars of HTML from LLM", len(html))
     except Exception as e:
+        log.exception("ben_aharon: LLM failed for trip=%r, using fallback", trip_name)
         print(f"[ben_aharon] LLM failed, using fallback: {e}")
         from analytics import analytic_ben_aharon_special
         html = analytic_ben_aharon_special(trip_name)["html"]

@@ -15,6 +15,7 @@ Algorithm
    compute a cover image, extract geographic stops, and persist everything.
 """
 
+import logging
 import math
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -31,6 +32,8 @@ from filter import (
     compute_composite_score, _normalize,
     cluster_temporal, cluster_geographic, cluster_visual, merge_clusters,
 )
+
+log = logging.getLogger("quemory.trips")
 
 # ── tunables ────────────────────────────────────────────────
 INITIAL_GAP_HOURS = 4        # hours of silence → new candidate
@@ -87,14 +90,20 @@ def detect_trips(features_list: list[dict],
                  max_merge_gap_hours: float = MAX_MERGE_GAP_HOURS,
                  max_speed_kmh: float = MAX_SPEED_KMH) -> list[list[dict]]:
     """Return a list of trips, each a list of feature dicts sorted by timestamp."""
+    log.info(
+        "detect_trips(): %d features, initial_gap=%.1fh max_merge_gap=%.1fh max_speed=%.0fkm/h",
+        len(features_list), initial_gap_hours, max_merge_gap_hours, max_speed_kmh,
+    )
     if homes is None:
         homes = get_home_locations()
+    log.debug("detect_trips: using %d home location(s)", len(homes))
 
     timed = sorted(
         [f for f in features_list if f.get("timestamp") is not None],
         key=lambda f: f["timestamp"],
     )
     if not timed:
+        log.warning("detect_trips: no features had a timestamp; returning []")
         return []
 
     # Step 1 — split at large gaps
@@ -130,6 +139,10 @@ def detect_trips(features_list: list[dict],
 
         merged[-1].extend(candidate)
 
+    log.info(
+        "detect_trips: %d initial candidate(s) -> %d merged trip(s)",
+        len(candidates), len(merged),
+    )
     return merged
 
 
@@ -388,17 +401,20 @@ def detect_and_save_all(features_list: list[dict],
     unassigned_paths = {img['file_path'] for img in unassigned}
 
     if not unassigned_paths:
-        print("[trips] No new images to process.")
+        log.info("detect_and_save_all: no new images to process")
         return {"trips": [], "merged": 0, "excluded": 0}
 
     # Step 2: Filter features_list to only unassigned photos
     new_features = [f for f in features_list if f.get("path") in unassigned_paths]
 
     if not new_features:
-        print("[trips] No unassigned photos with features found.")
+        log.warning("detect_and_save_all: no unassigned photos with features found")
         return {"trips": [], "merged": 0, "excluded": 0}
 
-    print(f"[trips] Processing {len(new_features)} new images (skipping {len(features_list) - len(new_features)} already processed)")
+    log.info(
+        "detect_and_save_all: processing %d new images (skipping %d already processed)",
+        len(new_features), len(features_list) - len(new_features),
+    )
 
     # Step 3: Run trip detection on new photos only
     existing = list_trips()
@@ -457,6 +473,10 @@ def detect_and_save_all(features_list: list[dict],
             conn.close()
 
             print(f"[trips] Added {len(trip_image_ids)} photos to existing trip '{matched_existing['name']}'")
+            log.info(
+                "Merged %d photos into existing trip id=%d name=%r",
+                len(trip_image_ids), matched_existing["id"], matched_existing["name"],
+            )
             skipped += 1
             continue
 
@@ -472,15 +492,23 @@ def detect_and_save_all(features_list: list[dict],
               f"{summary['total_photos']} photos, "
               f"{summary['total_key_photos']} key, "
               f"{summary['locations']} stops")
+        log.info(
+            "Saved NEW trip id=%s name=%r photos=%d key=%d stops=%d",
+            summary.get("trip_id"), summary.get("name"),
+            summary.get("total_photos"), summary.get("total_key_photos"),
+            summary.get("locations"),
+        )
 
     # Step 4: Mark remaining unassigned images as excluded (near home / too few)
     excluded_paths = unassigned_paths - assigned_paths
     excluded_ids = [path_to_id[p] for p in excluded_paths if p in path_to_id]
     if excluded_ids:
         mark_images_excluded(excluded_ids)
+        log.info("detect_and_save_all: excluded %d images (daily life / too few)", len(excluded_ids))
         print(f"[trips] Excluded {len(excluded_ids)} images (daily life / too few)")
 
     if skipped:
+        log.info("detect_and_save_all: %d cluster(s) merged into existing trips", skipped)
         print(f"[trips] {skipped} cluster(s) merged into existing trips")
 
     return {

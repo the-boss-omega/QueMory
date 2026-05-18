@@ -1,3 +1,4 @@
+import logging
 import os
 import sqlite3
 import struct
@@ -13,13 +14,17 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import clip
 
+log = logging.getLogger("quemory.clip_embed")
+
 DB_DIR = os.path.join(os.path.dirname(__file__), "database")
 DB_PATH = os.path.join(DB_DIR, "embeddings.db")
 IMAGES_FOLDER = os.path.join(os.path.dirname(__file__), "..", "assets", "images1")
 OLLAMA_MODEL = "gemma4:e4b"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+log.info("Loading CLIP ViT-B/32 on device=%s", device)
 model, preprocess = clip.load("ViT-B/32", device=device)
+log.info("CLIP model loaded")
 
 
 def _serialize(vec: np.ndarray) -> bytes:
@@ -48,6 +53,7 @@ def _init_db():
 
 
 def save_all_embeddings():
+    log.info("save_all_embeddings(): scanning %s", IMAGES_FOLDER)
     conn = _init_db()
     extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
     images = [
@@ -55,8 +61,11 @@ def save_all_embeddings():
         if p.suffix.lower() in extensions and p.is_file()
     ]
 
+    log.info("Found %d image(s) in %s", len(images), IMAGES_FOLDER)
     print(f"Found {len(images)} images in {IMAGES_FOLDER}")
     saved = 0
+    skipped_existing = 0
+    failed = 0
 
     for img_path in images:
         abs_path = str(img_path.resolve())
@@ -64,6 +73,7 @@ def save_all_embeddings():
             "SELECT id FROM embeddings WHERE file_path = ?", (abs_path,)
         ).fetchone()
         if existing:
+            skipped_existing += 1
             continue
 
         try:
@@ -78,19 +88,28 @@ def save_all_embeddings():
                 (abs_path, img_path.name, _serialize(vec)),
             )
             saved += 1
+            log.debug("Embedded [%d] %s", saved, img_path.name)
             print(f"  [{saved}] {img_path.name}")
-        except Exception as e:
-            print(f"  SKIP {img_path.name}: {e}")
+        except Exception:
+            failed += 1
+            log.exception("Failed to embed %s", img_path.name)
+            print(f"  SKIP {img_path.name}")
 
     conn.commit()
     conn.close()
+    log.info(
+        "save_all_embeddings done: saved=%d skipped_existing=%d failed=%d",
+        saved, skipped_existing, failed,
+    )
     print(f"Done. Saved {saved} new embeddings to {DB_PATH}")
 
 
 def search(query: str, top_k: int = 5):
+    log.info("CLIP search query=%r top_k=%d", query, top_k)
     conn = _init_db()
     rows = conn.execute("SELECT file_path, file_name, embedding FROM embeddings").fetchall()
     if not rows:
+        log.warning("search(): no embeddings in DB; run save_all_embeddings() first")
         print("No embeddings in database. Run save_all_embeddings() first.")
         conn.close()
         return []
@@ -119,6 +138,7 @@ def search(query: str, top_k: int = 5):
 
 def _expand_query(query: str, n: int = 4) -> list[str]:
     """Use Ollama to expand a complex query into simpler CLIP-friendly sub-phrases."""
+    log.debug("Expanding query via Ollama: %r", query)
     try:
         import ollama
         resp = ollama.generate(
@@ -135,8 +155,10 @@ def _expand_query(query: str, n: int = 4) -> list[str]:
             for line in resp["response"].split("\n")
             if line.strip() and len(line.strip()) > 3
         ]
+        log.debug("Ollama expanded %r into %d phrase(s)", query, len(phrases))
         return (phrases[:n] if phrases else [query])
     except Exception:
+        log.exception("Ollama query expansion failed; falling back to raw query")
         return [query]
 
 
